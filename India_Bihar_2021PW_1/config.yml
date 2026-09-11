@@ -1,0 +1,31 @@
+
+
+########################
+default:
+  project_name: "Bihar Pathways 2021"
+  root_path: "C:/Users/jeremyco/OneDrive - Bill & Melinda Gates Foundation/scenario_pathways_bihar_2021/"
+  user_path: "jc/"
+
+  create_new_pathways_workbook: FALSE
+  pathways_workbook_path: "C:/Users/jeremyco/OneDrive - Bill & Melinda Gates Foundation/scenario_pathways_bihar_2021/jc/pathways workbook - bihar.xlsx"
+  new_pathways_workbook_path: "C:/Users/jeremyco/OneDrive - Bill & Melinda Gates Foundation/scenario_pathways_bihar_2021/jc/pathways workbook - bihar (new).xlsx"
+
+  shp_file: "gadm41_IND_shp/gadm41_IND_1.shp"
+  data_state_var: "state"
+
+  use_svy_design: FALSE
+  svy_id_var: "svy_id"
+  svy_strata_var: "svy_strata"
+
+
+
+########################
+docker:
+  root_path: "/home/rstudio/OneDrive - Bill & Melinda Gates Foundation/scenario_dhs_senegal_2019/"
+  user_path: "docker/"
+
+  pathways_workbook_path: "pathways workbook - senegal.xlsx"
+
+
+
+

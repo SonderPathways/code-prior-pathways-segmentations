@@ -1,0 +1,955 @@
+---
+title: "9.4_Indonesia_DHS_LCA (round 4)"
+author: "Lang Gao"
+date: "2023-11-1"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '6'
+  word_document:
+    toc: yes
+    toc_depth: '6'
+  pdf_document:
+    toc: yes
+    toc_depth: '6'
+---
+
+<style type="text/css">
+
+h1.title {
+  font-size: 21px;
+  color: Blue;
+  text-align: center;
+}
+h4.author { /* Header 4 - and the author and data headers use this too  */
+    font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+h4.date { /* Header 4 - and the author and data headers use this too  */
+  font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+</style>
+
+</br>
+
+
+***
+---
+
+#######################################
+1. Setting up the script
+#######################################
+
+Set up filepath, notation and packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(scipen = 100, digits = 4)
+
+#Set filepath
+setwd("/Users/langgao/Downloads/Freelancer projects/Sonder/Indonesia/Segmentation")
+```
+
+Load packages
+```{r,echo=FALSE}
+rm(list=ls())
+pacman::p_load("poLCA", "tidyverse","readxl","ggplot2","ggalluvial","ggrepel","gridExtra","cowplot","survey","dplyr","scales","RColorBrewe","networkD3")
+```
+
+##############################################
+2. Generate formatted data for poLCA package
+##############################################
+
+## 1. Documentation and data preparation
+```{r, eval=FALSE, echo=TRUE}
+#The purpose of this round is to take out a few more variables that are not that useful (don't vary much across clusters), or are highly correlated, so that we can re-run the model to particularly see how 4-class model performs (e.g. will it get mre stale, will it land in solutions that gives good differentiation among segments, etc.). Will update this list of variables on the excel out of script 7 (sheet = 'final_var_r4'). Here we keep both work.seasonal and wd.ownincome.cat
+#So at this stage, we are particularly interest in comparing k=3 vs k=4, will run k=2:4 only.
+```
+
+Variables for the 4th round
+```{r}
+#Below are the 19 unique variables used in the decision trees (before prune; if after pruning, even fewer). I still include wealth.index.ur.ord here
+#Domain 1: early.cohab.19, ed.lev.cat1, marr.cohab, media.sum.2plus
+#Domain 2: marr.cohab, husb.ed.mtprim, wd.ownincome.cat, highestyearsedinHH.7plus, num.under15.2plus
+#Domain 3: hh.toilet.flush, hh.watpur.appr, water.cat, work.seasonal, wealth.index.ur.ord
+#Domain 4: med.distance
+#Domain 5: disc.fp.yn, insurance.cov.cat1,  
+#Domain 6: slum1, vehic.index, hh.land
+
+#Below are variables not used in the decision tree
+#jd.hlth.cat
+#med.alone
+
+#Here we have a slightly larger sample size because fewer obs. were dropped for NAs in the 19 variables.
+```
+
+```{r}
+var <- read_xlsx("7_Construct_mapping.xlsx",sheet = 'final_var_r4')
+var <- var[!duplicated(var$f.var.name),]
+#dim(var) #19 unique variables for the 4th round
+```
+
+Import the data
+```{r}
+dhs.seg <- readRDS("5_Indonesia_DHS_exploratory.rds")
+#dim(dhs.seg) #101693, 311
+```
+
+```{r}
+pca.var <- c("ed.lev.cat1","early.cohab.19", "marr.cohab", "media.sum.2plus", "husb.ed.mtprim", "wd.ownincome.cat", "highestyearsedinHH.7plus", "num.under15.2plus", "work.seasonal", "water.cat", "wealth.index.ur.ord", "hh.watpur.appr", "hh.toilet.flush", "med.distance", "disc.fp.yn", "insurance.cov.cat1", "slum1", "vehic.index", "hh.land")
+
+#lapply(dhs.seg[,pca.var],class)
+```
+
+Data preparation for LCA
+```{r}
+#recode for LCA, recode those that are actually binary but has characters (string) (or not numeric) to (0,1)
+subset_var <- var[var$f.var.name %in% pca.var, c("f.var.name", "var.type")]
+#print(subset_var) #for those binary and already numeric, it is good. Need to convert insurance.cov.cat1 and hh.toilet.flush which are actually binary but character in script 4 to numeric binary.
+dhs.seg$insurance.cov.cat1 <- ifelse(dhs.seg$insurance.cov.cat1 == "EPM coverage",1,0) 
+#table(dhs.seg$insurance.cov.cat1)
+dhs.seg$hh.toilet.flush <- ifelse(dhs.seg$hh.toilet.flush == "flush toilet",1,0)
+#table(dhs.seg$hh.toilet.flush)
+
+ord.var <- subset_var$f.var.name[subset_var$var.type=='ordinal']
+bin.var <- subset_var$f.var.name[subset_var$var.type=='binary']
+cat.var <- subset_var$f.var.name[subset_var$var.type=='categorical']
+
+#ord.var #1 var
+#bin.var #12 var
+#cat.var #6 var
+```
+
+```{r, echo=TRUE}
+## For ordinal re-categorize to start at 1
+#table(dhs.seg$wealth.index.ur.ord) ## but the only ordinal variable here already starts from 1, so no need to recode it. The code below is just for printing the tables.
+for (var_name in ord.var) {
+  cat("\nVariable:", var_name, "\n")
+  print(table(dhs.seg[,var_name]))
+}
+
+## setting binary to be 1/2
+for (var_name in bin.var) {
+  dhs.seg[,var_name] <- ifelse(dhs.seg[,var_name] == 0, 1, 2)
+  cat("\nVariable:", var_name, "\n")
+  print(table(dhs.seg[,var_name]))
+}
+
+## setting nominal (categorical) to be coded as 1,2, (here they are all character, no factor...
+for (var_name in cat.var) {
+  dhs.seg[,var_name] <- as.numeric(as.factor(dhs.seg[,var_name]))
+  cat("\nVariable:", var_name, "\n")
+  print(table(dhs.seg[, var_name]))
+}
+#now we have converted all 19 vars properly to integer for LCA
+```
+
+```{r, echo=TRUE}
+#Note that since we have fewer variables to be put into f, there are fewer obs. dropped for NA: sample size for rural remains the same, sample size for urban incased for 4.
+comple.case.urban <- dhs.seg %>% filter(hh.urban==1) %>% select("ed.lev.cat1","early.cohab.19", "marr.cohab", "media.sum.2plus", "husb.ed.mtprim", "wd.ownincome.cat", "highestyearsedinHH.7plus", "num.under15.2plus", "work.seasonal", "water.cat", "wealth.index.ur.ord", "hh.watpur.appr", "hh.toilet.flush", "med.distance",  "disc.fp.yn", "insurance.cov.cat1", "slum1", "vehic.index", "hh.land", "caseid") %>% drop_na()
+#dim(comple.case.urban) #50148
+#(50492-50148)/50492 (0.07) 
+
+comple.case.rural <- dhs.seg %>% filter(hh.urban==0) %>% select("ed.lev.cat1","early.cohab.19", "marr.cohab", "media.sum.2plus", "husb.ed.mtprim", "wd.ownincome.cat", "highestyearsedinHH.7plus", "num.under15.2plus", "work.seasonal", "water.cat", "wealth.index.ur.ord", "hh.watpur.appr", "hh.toilet.flush", "med.distance", "disc.fp.yn", "insurance.cov.cat1", "slum1", "vehic.index", "hh.land", "caseid") %>% drop_na()
+#dim(comple.case.rural) #50866
+#(51201-50866)/51201 (0.7%)
+
+#slightly more sample as fewer NAs for the 19 variables
+
+dhs.seg_reform_urban4 <- dhs.seg[dhs.seg$caseid %in% comple.case.urban$caseid,] 
+#dim(dhs.seg_reform_urban4) #50148 311
+dhs.seg_reform_rural4 <- dhs.seg[dhs.seg$caseid %in% comple.case.rural$caseid,]
+#dim(dhs.seg_reform_rural4) #50866 311
+
+# save for later use
+saveRDS(dhs.seg_reform_urban4, file="LCA/Round4/9d_dhs.seg_reform_urban.rds")
+saveRDS(dhs.seg_reform_rural4, file="LCA/Round4/9d_dhs.seg_reform_rural.rds")
+```
+
+Data preparation for plot
+```{r}
+vul.lca <- readRDS("4_forLCAplot_IND_DHS_vulnerability.rds")
+load("1_Indonesia_DHS_outcomes.RData")
+dhs.seg.lca <- merge(vul.lca, outcomes, by="caseid", all.x=T)
+dhs.seg.lca$age.adj <- cut(dhs.seg.lca$age.yrs,
+                       breaks = c(14, 19, 24, 29, 34, 39, 44, 49), 
+                       labels = c("15-19", "20-24", "25-29", "30-34", "35-39", "40-44", "45-49"))
+#dim(dhs.seg.lca) #101693    311
+
+dhs.seg_urban4 <- dhs.seg.lca[dhs.seg.lca$caseid %in% comple.case.urban$caseid,]
+#dim(dhs.seg_urban4) #50148 311
+dhs.seg_rural4 <- dhs.seg.lca[dhs.seg.lca$caseid %in% comple.case.rural$caseid,]
+#dim(dhs.seg_rural4) #50866 311
+```
+
+## 2. LCA for rural
+```{r}
+dhs.seg_reform_rural <- readRDS("LCA/Round4/9d_dhs.seg_reform_rural.rds")
+#dim(dhs.seg_reform_rural) #50866   311
+#lapply(dhs.seg_reform_rural[,pca.var],class)
+```
+
+### 2.1. Model, statistics, distribution
+```{r}
+sink("round4_rural.txt")
+f <- cbind(ed.lev.cat1,early.cohab.19, marr.cohab, media.sum.2plus, husb.ed.mtprim, wd.ownincome.cat, highestyearsedinHH.7plus, num.under15.2plus, work.seasonal, water.cat, wealth.index.ur.ord, hh.watpur.appr, hh.toilet.flush, med.distance, disc.fp.yn, insurance.cov.cat1, vehic.index, hh.land)~1
+
+rural_class_comp <- data.frame('k' = 2:4, 'BIC' = numeric(3), 'AIC' = numeric(3), 'Chisq' = numeric(3), 'llh' = numeric(3), 'iter' = numeric(3))
+rural_pred_class <- list()
+
+lca_results <- list()
+for (i in 1:3) {
+  print(i)
+  cat("\nRunning model with", i + 1, "classes...\n")
+  res <- tryCatch({
+    poLCA(f, dhs.seg_reform_rural, nclass = (i + 1), maxiter = 5000, tol = 1e-7, nrep = 50, verbose = TRUE)
+  }, error = function(e) {
+    cat("An error occurred: ", e$message, "\n")
+    return(NULL)
+  })
+
+  lca_results[[i]] <- res
+  
+  if (is.null(res)) {
+    cat("The poLCA function did not return results for", i + 1, "classes.\n")
+    rural_class_comp[rural_class_comp$k == (i + 1), ] <- c((i + 1), NA, NA, NA, NA, NA)
+    next
+  }
+
+  rural_class_comp[rural_class_comp$k == (i + 1), ] <- c((i + 1), res$bic %||% NA, res$aic %||% NA, res$Chisq %||% NA, res$llik %||% NA, res$numiter %||% NA)
+
+  if (!is.null(res$predclass)) {
+    dhs.seg_rural4$cluster <- res$predclass
+    dhs.seg_reform_rural$cluster <- res$predclass
+    names(dhs.seg_rural4)[names(dhs.seg_rural4)=='cluster'] <- paste0('cluster_k',(i+1))
+    names(dhs.seg_reform_rural)[names(dhs.seg_reform_rural)=='cluster'] <- paste0('cluster_k',(i+1))
+  } else {
+    warning("Model with", i + 1, "classes did not return class memberships.")
+  }
+}
+
+sink()
+print(rural_class_comp)  
+```
+
+```{r, eval=FALSE}
+#dim(dhs.seg_reform_rural) #50866 314
+#dim(dhs.seg_rural4) #50866 314
+#names(dhs.seg_reform_rural)
+saveRDS(dhs.seg_reform_rural, file="LCA/Round4/9d_dhs.seg_reform_rural_seg.rds")
+saveRDS(dhs.seg_rural4, file="LCA/Round4/9d_dhs.seg_rural_seg.rds")
+```
+
+Read in data with segments
+```{r}
+dhs.seg_reform_rural <- readRDS("LCA/Round4/9d_dhs.seg_reform_rural_seg.rds")
+dhs.seg_rural <- readRDS("LCA/Round4/9d_dhs.seg_rural_seg.rds")
+#dim(dhs.seg_reform_rural) #50866   314
+#dim(dhs.seg_rural) #50866   314
+```
+
+```{r}
+rural.dist <- dhs.seg_reform_rural %>%
+  select(cluster_k2,cluster_k3,cluster_k4) %>%
+  gather(class_num, "value", 1:3) %>% 
+  group_by(class_num,value) %>% 
+  summarise(count = n()) %>% 
+  mutate(perc = round((count/50833)*100, digits = 1)) %>%
+  ungroup()
+
+rural.dist$class_num <- factor(rural.dist$class_num, levels = c("cluster_k2", "cluster_k3", "cluster_k4"))
+
+ggplot(rural.dist, aes(x = class_num, y = perc, fill = as.factor(value))) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  theme_minimal() +
+  coord_flip() +
+  labs(x = "Cluster Number", y = "Percentage", fill = "Value", title = "Distribution of segment for k-class") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+### 2.2. Heatmap (binary)
+```{r, eval=FALSE}
+dhs.seg_reform_rural.k2 <- dhs.seg_reform_rural %>% 
+  select(c(bin.var),cluster_k2) 
+
+dhs.seg_reform_rural.k2 <- dhs.seg_reform_rural.k2 %>%
+  mutate(across(all_of(bin.var), ~ifelse(. == 2, 1, 0), .names = "prop_{.col}")) %>%
+  group_by(cluster_k2) %>%
+  summarise(across(starts_with("prop_"), mean))
+
+#dhs.seg_reform_rural.k2
+
+#define var.labels
+custom_labels <- c(
+  "marr.cohab" = "With partner",
+  "early.cohab.19" = "Early marriage or cohabitation",
+  "media.sum.2plus" = "Use 2+ media sources",
+  "num.under15.2plus" = "With 2+ children U15",
+  "hh.kidwom.rat.2plus" = "Ratio of U5 to women >=2",
+  "husb.ed.mtprim" = "Partner edu more than primary",
+  "highestyearsedinHH.7plus" = "7+ years of edu for HH",
+  "hh.watpur.appr" = "Use water purify method",
+  "hh.toilet.flush" = "Use flush toilet",
+  "med.distance" = "Distance is a big problem",
+  "med.alone" = "Going alone is a big problem",
+  "med.permis" = "Getting permision is a big problem",
+  "disc.fp.yn" = "Discuss FP with someone",
+  "insurance.cov.cat1" = "Coverged by EPM insurance",
+  "hh.land" = "Own land for agriculture"
+)
+
+# Reshape dataframe for ggplot
+df_long <- dhs.seg_reform_rural.k2 %>%
+  pivot_longer(cols = starts_with("prop_"), names_to = "var.label", values_to = "prop") %>%
+  mutate(var.label = str_remove(var.label, "prop_"),
+         label = ifelse(var.label %in% names(custom_labels), custom_labels[var.label], var.label),
+         label_percent = scales::percent(prop, accuracy = 1))
+df_long <- merge(df_long, var, by.x = "var.label", by.y = "f.var.name")
+
+df_long$category <- gsub("Woman and her past experiences", "Woman and her\npast experiences", df_long$category)
+df_long$category <- gsub("Household relationships", "Household\nrelationships", df_long$category)
+df_long$category <- gsub("Household economics and living conditions", "HH econ &\nliving cond.", df_long$category)
+df_long$category <- gsub("Health mental models", "Health mental\nmodels", df_long$category)
+df_long$category <- gsub("Social support", "Social\nsupport", df_long$category)
+df_long$category <- gsub("Human and natural systems", "H&N\nsystem", df_long$category)
+
+df_long$category <- factor(df_long$category, 
+                    levels = c("Woman and her\npast experiences", "Household\nrelationships", "HH econ &\nliving cond.", "Health mental\nmodels","Social\nsupport","H&N\nsystem"),ordered = TRUE)
+
+# Plot
+ggplot(df_long, aes(x = factor(cluster_k2), y = label, fill = prop)) +
+  geom_tile() +
+  facet_grid(rows = vars(category), scales = "free_y", space = "free_y", switch = "y") +
+  scale_fill_gradient2(low = "#313695", mid = "#FFFFBF", high = "#A50026", midpoint = 0.5, breaks = seq(0, 1, 0.1)) +
+  labs(title = "Proportion within cluster", x = '', y = '', fill = 'Proportion within\ncluster') +
+  theme_minimal() +
+  theme(legend.text = element_text(size = 5),
+        legend.title = element_text(size = 5),
+        axis.text = element_text(size = 6),
+        strip.background = element_blank(),
+        strip.placement = "outside",
+        strip.text.y = element_text(angle = 180, size = 5),  # adjust size here
+        panel.spacing.y = unit(0.8, "lines"))  # adjust space between categories here
+
+```
+
+```{r}
+# Define function
+generate_heatmap <- function(data, cluster_var_name) {
+  
+  data_modified <- data %>%
+    select(c(bin.var), .data[[cluster_var_name]]) %>%
+    mutate(across(all_of(bin.var), ~ifelse(. == 2, 1, 0), .names = "prop_{.col}")) %>%
+    group_by(.data[[cluster_var_name]]) %>%
+    summarise(across(starts_with("prop_"), mean))
+  
+  custom_labels <- c(
+  "marr.cohab" = "With partner",
+  "early.cohab.19" = "Early marriage or cohabitation",
+  "media.sum.2plus" = "Use 2+ media sources",
+  "num.under15.2plus" = "With 2+ children U15",
+  "hh.kidwom.rat.2plus" = "Ratio of U5 to women >=2",
+  "husb.ed.mtprim" = "Partner edu more than primary",
+  "highestyearsedinHH.7plus" = "7+ years of edu for HH",
+  "hh.watpur.appr" = "Use water purify method",
+  "hh.toilet.flush" = "Use flush toilet",
+  "med.distance" = "Distance is a big problem",
+  "med.alone" = "Going alone is a big problem",
+  "med.permis" = "Getting permision is a big problem",
+  "disc.fp.yn" = "Discuss FP with someone",
+  "insurance.cov.cat1" = "Coverged by EPM insurance",
+  "hh.land" = "Own land for agriculture"
+)
+  
+  df_long <- data_modified %>%
+    pivot_longer(cols = starts_with("prop_"), names_to = "var.label", values_to = "prop") %>%
+    mutate(var.label = str_remove(var.label, "prop_"),
+           label = ifelse(var.label %in% names(custom_labels), custom_labels[var.label], var.label),
+           label_percent = scales::percent(prop, accuracy = 1))
+  df_long <- merge(df_long, var, by.x = "var.label", by.y = "f.var.name")
+  
+  df_long$category <- gsub("Woman and her past experiences", "Woman and her\npast experiences", df_long$category)
+  df_long$category <- gsub("Household relationships", "Household\nrelationships", df_long$category)
+  df_long$category <- gsub("Household economics and living conditions", "HH econ &\nliving cond.", df_long$category)
+  df_long$category <- gsub("Health mental models", "Health mental\nmodels", df_long$category)
+  df_long$category <- gsub("Social support", "Social\nsupport", df_long$category)
+  df_long$category <- gsub("Human and natural systems", "H&N\nsystem", df_long$category)
+
+  df_long$category <- factor(df_long$category, 
+                    levels = c("Woman and her\npast experiences", "Household\nrelationships", "HH econ &\nliving cond.", "Health mental\nmodels","Social\nsupport","H&N\nsystem"),ordered = TRUE)
+  
+  # Plot
+  heatmap <- ggplot(df_long, aes(x = factor(.data[[cluster_var_name]]), y = label, fill = prop)) +
+    geom_tile() +
+  facet_grid(rows = vars(category), scales = "free_y", space = "free_y", switch = "y") +
+  scale_fill_gradient2(low = "#313695", mid = "#FFFFBF", high = "#A50026", midpoint = 0.5, breaks = seq(0, 1, 0.1)) +
+  labs(title = "Proportion within cluster", x = '', y = '', fill = 'Proportion within\ncluster') +
+  theme_minimal() +
+  theme(legend.text = element_text(size = 5),
+        legend.title = element_text(size = 5),
+        axis.text = element_text(size = 6),
+        strip.background = element_blank(),
+        strip.placement = "outside",
+        strip.text.y = element_text(angle = 180, size = 5),
+        panel.spacing.y = unit(0.8, "lines")) 
+    
+  return(heatmap)
+}
+
+# Define the cluster variables
+cluster_vars <- c("cluster_k2", "cluster_k3", "cluster_k4")
+heatmaps_list <- purrr::map(cluster_vars, ~ generate_heatmap(dhs.seg_reform_rural, .x))
+
+# To print each heatmap
+purrr::walk(heatmaps_list, print)
+```
+
+### 2.3. Stacked bar (categorical)
+```{r, fig.width=15, eval=FALSE}
+# Prepare data
+cat.var.rural <- cat.var[cat.var != "slum1"]
+
+custom_labels <- c(
+  "ed.lev.cat1" = "Women's edu",
+  "wd.ownincome.cat" = "Women's deicision on own income",
+  "jd.hlth.cat" = "Joined decision on women's health",
+  "work.seasonal" = "Women's work",
+  "water.cat" = "Water source",
+  "partner.working" = "Partner's work",
+  "auto.contra" = "Autonomy on contraceptive",
+  "vehic.index" = "Vehicle ownership"
+)
+
+long_dt <- dhs.seg_rural %>%
+  select(c(cat.var.rural, 'cluster_k2')) %>%
+  pivot_longer(cols = all_of(cat.var.rural), names_to = "variable", values_to = "level")
+
+cluster_size <- long_dt %>%
+  group_by(cluster_k2, variable) %>%
+  summarize(cluster_total = n(), .groups = 'drop')
+
+agg_dt <- long_dt %>%
+  group_by(cluster_k2, variable, level) %>%
+  summarize(ct = n(), .groups = 'drop') %>% 
+  left_join(cluster_size, by = c("cluster_k2", "variable")) %>% 
+  mutate(pct = round((ct/cluster_total)*100, 2)) %>% 
+  mutate(var.label = ifelse(variable %in% names(custom_labels), 
+                            custom_labels[variable], 
+                            variable))
+
+agg_dt <- merge(agg_dt, var, by.x = "variable", by.y = "f.var.name")
+
+agg_dt$category <- gsub("Woman and her past experiences", "Woman and her\npast experiences", agg_dt$category)
+agg_dt$category <- gsub("Household relationships", "Household\nrelationships", agg_dt$category)
+agg_dt$category <- gsub("Household economics and living conditions", "HH econ &\nliving cond.", agg_dt$category)
+agg_dt$category <- gsub("Health mental models", "Health mental\nmodels", agg_dt$category)
+agg_dt$category <- gsub("Social support", "Social\nsupport", agg_dt$category)
+agg_dt$category <- gsub("Human and natural systems", "H&N\nsystem", agg_dt$category)
+
+agg_dt$category <- factor(agg_dt$category, 
+                    levels = c("Woman and her\npast experiences", "Household\nrelationships", "HH econ &\nliving cond.", "Health mental\nmodels","Social\nsupport","H&N\nsystem"),ordered = TRUE)
+
+agg_dt$var.label <- gsub("Women's edu", "Women's edu", agg_dt$var.label)
+agg_dt$var.label <- gsub("Women's deicision on own income", "Women's deicision\non own income", agg_dt$var.label)
+agg_dt$var.label <- gsub("Joined decision on women's health", "Joined decision\non women's health", agg_dt$var.label)
+agg_dt$var.label <- gsub("Women's work", "Women's work", agg_dt$var.label)
+agg_dt$var.label <- gsub("Water source", "Water source", agg_dt$var.label)
+agg_dt$var.label <- gsub("Partner's work", "Partner's work", agg_dt$var.label)
+agg_dt$var.label <- gsub("Autonomy on contraceptive", "Autonomy on\ncontraceptive", agg_dt$var.label)
+agg_dt$var.label <- gsub("Vehicle ownership", "Vehicle\nownership", agg_dt$var.label)
+
+# Define a manual color palette
+my_colors <- c("0" = "#f9c696", "1" = "#FDB863" , "2" = "#BF5B17", "Full or partial autonomy" = "#ECEC26", "No control over" = "#FFFF99", "Not partnered" = "#F0027F", "Higher education" = "#386CB0", "Some eduction" = "#9cc2f4", "No eduction" = "#666666", "Not in union" = "#F0027F", "Not paid in cash or not working" = "#e0dcdc", "No" = "#666666","Yes" = "#D32F2F", "Not protected" = "#666666", "Open protected" = "#C7E9C0",  "Piped or borehole" = "#7FC97F", "Tank or packed" = "#259d25", "All  year" = "#563880", "Seasonal" = "#BEAED4", "Occassional" = "#e6dff1", "No work in the past 12 months" = "#666666", "Worked last 12 months" = "#8E24AA", "Worked last 7 days" = "#b590bf", "Not working or no partner"="#F0027F")
+
+# Plot
+ggplot(agg_dt, aes(x=var.label, y=pct, fill=level)) + 
+  geom_bar(stat="identity", position="stack",width=0.5) + 
+  facet_grid(category ~ cluster_k2, scales = "free_y", space = "free_x", switch = "y") + 
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  scale_fill_manual(values=my_colors) +
+  labs(title = "Distribution within cluster", x = "", y = "Percentage of cluster total") +
+  guides(fill=guide_legend(title="Level")) +
+  geom_text(aes(label=round(pct, 0)), position=position_stack(vjust=0.5), size=3) +
+  theme_minimal() +
+  coord_flip()  +
+  theme(strip.background = element_blank(),
+        strip.placement = "outside",
+        axis.text.x = element_text(size = 6, angle = 0, hjust = 0.5, vjust = 0.5),
+        axis.text.y = element_text(size = 5.5),
+        panel.spacing = unit(0.1, "lines"), 
+        plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"),
+        strip.text = element_text(size = 6) )
+```
+
+```{r}
+custom_labels <- c(
+  "ed.lev.cat1" = "Women's edu",
+  "wd.ownincome.cat" = "Women's deicision on own income",
+  "jd.hlth.cat" = "Joined decision on women's health",
+  "work.seasonal" = "Women's work",
+  "water.cat" = "Water source",
+  "partner.working" = "Partner's work",
+  "auto.contra" = "Autonomy on contraceptive",
+  "vehic.index" = "Vehicle ownership")
+   
+cat.var.rural <- cat.var[cat.var != "slum1"]
+```
+
+```{r, fig.height = 8, fig.width=15}
+generate_stacked <- function(data, cluster_col) {
+
+  long_dt <- data %>%
+    select(all_of(cat.var.rural), .data[[cluster_col]]) %>%
+    pivot_longer(cols = all_of(cat.var.rural), names_to = "variable", values_to = "level")
+
+  cluster_size <- long_dt %>%
+    group_by(.data[[cluster_col]], variable) %>%
+    summarize(cluster_total = n(), .groups = 'drop')
+
+  agg_dt <- long_dt %>%
+    group_by(.data[[cluster_col]], variable, level) %>%
+    summarize(ct = n(), .groups = 'drop') %>%
+    left_join(cluster_size, by = c(cluster_col, "variable")) %>% 
+    mutate(pct = round((ct/cluster_total)*100, 2)) %>% 
+    mutate(var.label = ifelse(variable %in% names(custom_labels), 
+                            custom_labels[variable], 
+                            variable))
+
+agg_dt <- merge(agg_dt, var, by.x = "variable", by.y = "f.var.name")
+
+agg_dt$category <- gsub("Woman and her past experiences", "Woman and her\npast experiences", agg_dt$category)
+agg_dt$category <- gsub("Household relationships", "Household\nrelationships", agg_dt$category)
+agg_dt$category <- gsub("Household economics and living conditions", "HH econ &\nliving cond.", agg_dt$category)
+agg_dt$category <- gsub("Health mental models", "Health mental\nmodels", agg_dt$category)
+agg_dt$category <- gsub("Social support", "Social\nsupport", agg_dt$category)
+agg_dt$category <- gsub("Human and natural systems", "H&N\nsystem", agg_dt$category)
+
+agg_dt$category <- factor(agg_dt$category, 
+                    levels = c("Woman and her\npast experiences", "Household\nrelationships", "HH econ &\nliving cond.", "Health mental\nmodels","Social\nsupport","H&N\nsystem"),ordered = TRUE)
+
+agg_dt$var.label <- gsub("Women's edu", "Women's edu", agg_dt$var.label)
+agg_dt$var.label <- gsub("Women's deicision on own income", "Women's deicision\non own income", agg_dt$var.label)
+agg_dt$var.label <- gsub("Joined decision on women's health", "Joined decision\non women's health", agg_dt$var.label)
+agg_dt$var.label <- gsub("Women's work", "Women's work", agg_dt$var.label)
+agg_dt$var.label <- gsub("Water source", "Water source", agg_dt$var.label)
+agg_dt$var.label <- gsub("Partner's work", "Partner's work", agg_dt$var.label)
+agg_dt$var.label <- gsub("Autonomy on contraceptive", "Autonomy on\ncontraceptive", agg_dt$var.label)
+agg_dt$var.label <- gsub("Vehicle ownership", "Vehicle\nownership", agg_dt$var.label)
+
+# Define a manual color palette
+my_colors <- c("0" = "#f9c696", "1" = "#FDB863" , "2" = "#BF5B17", "Full or partial autonomy" = "#ECEC26", "No control over" = "#FFFF99", "Not partnered" = "#F0027F", "Higher education" = "#386CB0", "Some eduction" = "#9cc2f4", "No eduction" = "#666666", "Not in union" = "#F0027F", "Not paid in cash or not working" = "#e0dcdc", "No" = "#666666","Yes" = "#D32F2F", "Not protected" = "#666666", "Open protected" = "#C7E9C0",  "Piped or borehole" = "#7FC97F", "Tank or packed" = "#259d25", "All  year" = "#563880", "Seasonal" = "#BEAED4", "Occassional" = "#e6dff1", "No work in the past 12 months" = "#666666", "Worked last 12 months" = "#8E24AA", "Worked last 7 days" = "#b590bf", "Not working or no partner"="#F0027F")
+
+# Plot
+stacked <- ggplot(agg_dt, aes(x=var.label, y=pct, fill=level)) + 
+  geom_bar(stat="identity", position="stack",width=0.5) + 
+  facet_grid(category ~ .data[[cluster_col]], scales = "free_y", space = "free_x", switch = "y") + 
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  scale_fill_manual(values=my_colors) +
+  labs(title = "Distribution within cluster", x = "", y = "Percentage of cluster total") +
+  guides(fill=guide_legend(title="Level")) +
+  geom_text(aes(label=round(pct, 0)), position=position_stack(vjust=0.5), size=3) +
+  theme_minimal() +
+  coord_flip()  +
+  theme(strip.background = element_blank(),
+        strip.placement = "outside",
+        axis.text.x = element_text(size = 7, angle = 0, hjust = 0.5, vjust = 0.5), # Adjust size, angle for X-axis text
+        axis.text.y = element_text(size = 5.5),
+        panel.spacing = unit(0.1, "lines"), # Adjust spacing between panels (if you have facets)
+        plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"), # Adjust overall plot margins
+        strip.text = element_text(size = 6) )
+  
+  return(stacked)
+}
+
+# List of cluster columns
+cluster_columns <- c('cluster_k2','cluster_k3', 'cluster_k4')
+plot_list <- list()
+
+for (col in cluster_columns) {
+  plot_list[[col]] <- generate_stacked(dhs.seg_rural, col)
+}
+
+for (plot in plot_list) {
+  print(plot)
+}
+```
+
+### 2.4. Histogram (integer)
+```{r}
+#class(dhs.seg_reform_rural$wealth.index.ur.ord)
+#table(dhs.seg_rural$wealth.index.ur.ord)
+
+plot_histogram <- function(data, cluster_col) {
+  ggplot(data, aes(x = wealth.index.ur.ord)) + 
+    geom_histogram(binwidth = 1, fill = "#69b3a2", color = "#e9ecef", alpha = 0.9) + 
+    facet_wrap(as.formula(paste0("~ ", cluster_col))) + 
+    theme_minimal() + 
+    labs(x = "Wealth Index", y = "Count", title = paste("Histogram of Wealth Index by", cluster_col)) + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+
+cluster_cols <- paste0("cluster_k", 2:4)
+
+plot_list <- lapply(cluster_cols, function(cluster) {
+  plot_histogram(dhs.seg_reform_rural, cluster)
+})
+
+print(plot_list[[1]])
+print(plot_list[[2]])
+print(plot_list[[3]])
+```
+
+### 2.5. Sankey plot
+```{r}
+seg.sankey <- dhs.seg_reform_rural %>% 
+  select(cluster_k2, cluster_k3, cluster_k4) %>% 
+  rename(k2 = cluster_k2, k3 = cluster_k3, k4 = cluster_k4)
+
+links <- data.frame(source = character(), target = character(), value = character())
+
+for(i in 1:(ncol(seg.sankey) - 1)){
+  tmp <- seg.sankey %>%
+    group_by_(.dots = names(seg.sankey)[c(i, i+1)]) %>%
+    summarize(value = n()) %>%
+    ungroup()
+  
+  tmp$source <- paste0(names(seg.sankey)[i], "_", tmp[[1]])
+  tmp$target <- paste0(names(seg.sankey)[i+1], "_", tmp[[2]])
+  
+  links <- rbind(links, tmp[, c("source", "target", "value")])
+}
+
+# Create nodes data frame for Sankey diagram
+nodes <- data.frame(name = unique(c(links$source, links$target)))
+
+links$IDsource <- match(links$source, nodes$name) - 1
+links$IDtarget <- match(links$target, nodes$name) - 1
+
+# Create Sankey diagram
+sankey <- sankeyNetwork(Links = links, Nodes = nodes, Source = "IDsource",
+                        Target = "IDtarget", Value = "value", NodeID = "name",
+                        units = "TWh", fontSize = 12, nodeWidth = 30)
+
+sankey
+```
+
+
+## 3. LCA for urban
+```{r}
+dhs.seg_reform_urban <- readRDS("LCA/Round4/9d_dhs.seg_reform_urban.rds")
+#dim(dhs.seg_reform_urban) #50148   311
+#lapply(dhs.seg_reform_urban[,pca.var],class)
+```
+
+### 3.1. Model, statistics, distribution
+```{r,eval=FALSE}
+sink("round4_urban.txt")
+f <- cbind(ed.lev.cat1,early.cohab.19, marr.cohab, media.sum.2plus, husb.ed.mtprim, wd.ownincome.cat, highestyearsedinHH.7plus, num.under15.2plus, work.seasonal, water.cat, wealth.index.ur.ord, hh.watpur.appr, hh.toilet.flush, med.distance, disc.fp.yn, insurance.cov.cat1, slum1, vehic.index, hh.land)~1
+
+urban_class_comp <- data.frame('k' = 2:4, 'BIC' = numeric(3), 'AIC' = numeric(3), 'Chisq' = numeric(3), 'llh' = numeric(3), 'iter' = numeric(3))
+urban_pred_class <- list()
+
+lca_results <- list()
+for (i in 1:3) {
+  print(i)
+  cat("\nRunning model with", i + 1, "classes...\n")
+  res <- tryCatch({
+    poLCA(f, dhs.seg_reform_urban, nclass = (i + 1), maxiter = 5000, tol = 1e-7, nrep = 50, verbose = TRUE)
+  }, error = function(e) {
+    cat("An error occurred: ", e$message, "\n")
+    return(NULL)
+  })
+
+  lca_results[[i]] <- res
+  
+  if (is.null(res)) {
+    cat("The poLCA function did not return results for", i + 1, "classes.\n")
+    urban_class_comp[urban_class_comp$k == (i + 1), ] <- c((i + 1), NA, NA, NA, NA, NA)
+    next
+  }
+
+  urban_class_comp[urban_class_comp$k == (i + 1), ] <- c((i + 1), res$bic %||% NA, res$aic %||% NA, res$Chisq %||% NA, res$llik %||% NA, res$numiter %||% NA)
+
+  if (!is.null(res$predclass)) {
+    dhs.seg_urban4$cluster <- res$predclass
+    dhs.seg_reform_urban$cluster <- res$predclass
+    names(dhs.seg_urban4)[names(dhs.seg_urban4)=='cluster'] <- paste0('cluster_k',(i+1))
+    names(dhs.seg_reform_urban)[names(dhs.seg_reform_urban)=='cluster'] <- paste0('cluster_k',(i+1))
+  } else {
+    warning("Model with", i + 1, "classes did not return class memberships.")
+  }
+}
+
+sink()
+print(urban_class_comp)  
+```
+
+```{r}
+saveRDS(dhs.seg_reform_urban, file="LCA/Round4/9d_dhs.seg_reform_urban_seg.rds")
+#dim(dhs.seg_reform_urban) #50148   314
+#dhs.seg_reform_urban
+saveRDS(dhs.seg_urban4, file="LCA/Round4/9d_dhs.seg_urban_seg.rds")
+#dim(dhs.seg_urban4)#50148 314
+```
+
+Read in data with segments
+```{r}
+dhs.seg_reform_urban <- readRDS("LCA/Round4/9d_dhs.seg_reform_urban_seg.rds")
+dhs.seg_urban <- readRDS("LCA/Round4/9d_dhs.seg_urban_seg.rds")
+#dim(dhs.seg_reform_urban)
+#dim(dhs.seg_urban) #50148, 314
+```
+
+```{r}
+urban.dist <- dhs.seg_reform_urban %>%
+  select(cluster_k2,cluster_k3,cluster_k4) %>%
+  gather(class_num, "value", 1:3) %>% 
+  group_by(class_num,value) %>% 
+  summarise(count = n()) %>% 
+  mutate(perc = round((count/50125)*100, digits = 1)) %>%
+  ungroup()
+
+urban.dist$class_num <- factor(urban.dist$class_num, levels = c("cluster_k2", "cluster_k3", "cluster_k4"))
+
+ggplot(urban.dist, aes(x = class_num, y = perc, fill = as.factor(value))) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  theme_minimal() +
+  coord_flip() +
+  labs(x = "Cluster Number", y = "Percentage", fill = "Value", title = "Distribution of segments for k-class") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+### 3.2. Heatmap (binary)
+```{r}
+# Define function
+generate_heatmap <- function(data, cluster_var_name) {
+  
+  data_modified <- data %>%
+    select(c(bin.var), .data[[cluster_var_name]]) %>%
+    mutate(across(all_of(bin.var), ~ifelse(. == 2, 1, 0), .names = "prop_{.col}")) %>%
+    group_by(.data[[cluster_var_name]]) %>%
+    summarise(across(starts_with("prop_"), mean))
+  
+  custom_labels <- c(
+  "marr.cohab" = "With partner",
+  "early.cohab.19" = "Early marriage or cohabitation",
+  "media.sum.2plus" = "Use 2+ media sources",
+  "num.under15.2plus" = "With 2+ children U15",
+  "hh.kidwom.rat.2plus" = "Ratio of U5 to women >=2",
+  "husb.ed.mtprim" = "Partner edu more than primary",
+  "highestyearsedinHH.7plus" = "7+ years of edu for HH",
+  "hh.watpur.appr" = "Use water purify method",
+  "hh.toilet.flush" = "Use flush toilet",
+  "med.distance" = "Distance is a big problem",
+  "med.alone" = "Going alone is a big problem",
+  "med.permis" = "Getting permision is a big problem",
+  "disc.fp.yn" = "Discuss FP with someone",
+  "insurance.cov.cat1" = "Coverged by EPM insurance",
+  "hh.land" = "Own land for agriculture"
+)
+  
+  df_long <- data_modified %>%
+    pivot_longer(cols = starts_with("prop_"), names_to = "var.label", values_to = "prop") %>%
+    mutate(var.label = str_remove(var.label, "prop_"),
+           label = ifelse(var.label %in% names(custom_labels), custom_labels[var.label], var.label),
+           label_percent = scales::percent(prop, accuracy = 1))
+  df_long <- merge(df_long, var, by.x = "var.label", by.y = "f.var.name")
+  
+  df_long$category <- gsub("Woman and her past experiences", "Woman and her\npast experiences", df_long$category)
+  df_long$category <- gsub("Household relationships", "Household\nrelationships", df_long$category)
+  df_long$category <- gsub("Household economics and living conditions", "HH econ &\nliving cond.", df_long$category)
+  df_long$category <- gsub("Health mental models", "Health mental\nmodels", df_long$category)
+  df_long$category <- gsub("Social support", "Social\nsupport", df_long$category)
+  df_long$category <- gsub("Human and natural systems", "H&N\nsystem", df_long$category)
+
+  df_long$category <- factor(df_long$category, 
+                    levels = c("Woman and her\npast experiences", "Household\nrelationships", "HH econ &\nliving cond.", "Health mental\nmodels","Social\nsupport","H&N\nsystem"),ordered = TRUE)
+  
+  # Plot
+  heatmap <- ggplot(df_long, aes(x = factor(.data[[cluster_var_name]]), y = label, fill = prop)) +
+    geom_tile() +
+  facet_grid(rows = vars(category), scales = "free_y", space = "free_y", switch = "y") +
+  scale_fill_gradient2(low = "#313695", mid = "#FFFFBF", high = "#A50026", midpoint = 0.5, breaks = seq(0, 1, 0.1)) +
+  labs(title = "Proportion within cluster", x = '', y = '', fill = 'Proportion within\ncluster') +
+  theme_minimal() +
+  theme(legend.text = element_text(size = 5),
+        legend.title = element_text(size = 5),
+        axis.text = element_text(size = 6),
+        strip.background = element_blank(),
+        strip.placement = "outside",
+        strip.text.y = element_text(angle = 180, size = 5),
+        panel.spacing.y = unit(0.8, "lines")) 
+    
+  return(heatmap)
+}
+
+# Define the cluster variables
+cluster_vars <- c("cluster_k2", "cluster_k3", "cluster_k4")
+heatmaps_list <- purrr::map(cluster_vars, ~ generate_heatmap(dhs.seg_reform_urban, .x))
+
+# To print each heatmap
+purrr::walk(heatmaps_list, print)
+```
+
+### 3.3. Stacked bar (categorical)
+```{r}
+custom_labels <- c(
+  "ed.lev.cat1" = "Women's edu",
+  "wd.ownincome.cat" = "Women's deicision on own income",
+  "jd.hlth.cat" = "Joined decision on women's health",
+  "work.seasonal" = "Women's work",
+  "water.cat" = "Water source",
+  "partner.working" = "Partner's work",
+  "auto.contra" = "Autonomy on contraceptive",
+  "vehic.index" = "Vehicle ownership")
+  "slum1" = "Slum or not"
+cat.var.urban <- cat.var
+#table(dhs.seg_urban$slum1)
+```
+
+```{r, fig.height = 8, fig.width=15}
+generate_stacked_urban <- function(data, cluster_col) {
+
+  long_dt <- data %>%
+    select(all_of(cat.var.urban), .data[[cluster_col]]) %>%
+    pivot_longer(cols = all_of(cat.var.urban), names_to = "variable", values_to = "level")
+
+  cluster_size <- long_dt %>%
+    group_by(.data[[cluster_col]], variable) %>%
+    summarize(cluster_total = n(), .groups = 'drop')
+
+  agg_dt <- long_dt %>%
+    group_by(.data[[cluster_col]], variable, level) %>%
+    summarize(ct = n(), .groups = 'drop') %>%
+    left_join(cluster_size, by = c(cluster_col, "variable")) %>% 
+    mutate(pct = round((ct/cluster_total)*100, 2)) %>% 
+    mutate(var.label = ifelse(variable %in% names(custom_labels), 
+                            custom_labels[variable], 
+                            variable))
+
+agg_dt <- merge(agg_dt, var, by.x = "variable", by.y = "f.var.name")
+
+agg_dt$category <- gsub("Woman and her past experiences", "Woman and her\npast experiences", agg_dt$category)
+agg_dt$category <- gsub("Household relationships", "Household\nrelationships", agg_dt$category)
+agg_dt$category <- gsub("Household economics and living conditions", "HH econ &\nliving cond.", agg_dt$category)
+agg_dt$category <- gsub("Health mental models", "Health mental\nmodels", agg_dt$category)
+agg_dt$category <- gsub("Social support", "Social\nsupport", agg_dt$category)
+agg_dt$category <- gsub("Human and natural systems", "H&N\nsystem", agg_dt$category)
+
+agg_dt$category <- factor(agg_dt$category, 
+                    levels = c("Woman and her\npast experiences", "Household\nrelationships", "HH econ &\nliving cond.", "Health mental\nmodels","Social\nsupport","H&N\nsystem"),ordered = TRUE)
+
+agg_dt$var.label <- gsub("Women's edu", "Women's edu", agg_dt$var.label)
+agg_dt$var.label <- gsub("Women's deicision on own income", "Women's deicision\non own income", agg_dt$var.label)
+agg_dt$var.label <- gsub("Joined decision on women's health", "Joined decision\non women's health", agg_dt$var.label)
+agg_dt$var.label <- gsub("Women's work", "Women's work", agg_dt$var.label)
+agg_dt$var.label <- gsub("Water source", "Water source", agg_dt$var.label)
+agg_dt$var.label <- gsub("Partner's work", "Partner's work", agg_dt$var.label)
+agg_dt$var.label <- gsub("Autonomy on contraceptive", "Autonomy on\ncontraceptive", agg_dt$var.label)
+agg_dt$var.label <- gsub("Vehicle ownership", "Vehicle\nownership", agg_dt$var.label)
+
+# Define a manual color palette
+my_colors <- c("0" = "#f9c696", "1" = "#FDB863" , "2" = "#BF5B17", "Full or partial autonomy" = "#ECEC26", "No control over" = "#FFFF99", "Not partnered" = "#F0027F", "Higher education" = "#386CB0", "Some eduction" = "#9cc2f4", "No eduction" = "#666666", "Not in union" = "#F0027F", "Not paid in cash or not working" = "#e0dcdc", "No" = "#666666","Yes" = "#D32F2F", "Not protected" = "#666666", "Open protected" = "#C7E9C0",  "Piped or borehole" = "#7FC97F", "Tank or packed" = "#259d25", "All  year" = "#563880", "Seasonal" = "#BEAED4", "Occassional" = "#e6dff1", "No work in the past 12 months" = "#666666", "Worked last 12 months" = "#8E24AA", "Worked last 7 days" = "#b590bf", "Not working or no partner"="#F0027F","urban non-slum" = "#f2a273f5", "urban slum" = "#d46f32f5")
+
+# Plot
+stacked <- ggplot(agg_dt, aes(x=var.label, y=pct, fill=level)) + 
+  geom_bar(stat="identity", position="stack",width=0.5) + 
+  facet_grid(category ~ .data[[cluster_col]], scales = "free_y", space = "free_x", switch = "y") + 
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  scale_fill_manual(values=my_colors) +
+  labs(title = "Distribution within cluster", x = "", y = "Percentage of cluster total") +
+  guides(fill=guide_legend(title="Level")) +
+  geom_text(aes(label=round(pct, 0)), position=position_stack(vjust=0.5), size=3) +
+  theme_minimal() +
+  coord_flip()  +
+  theme(strip.background = element_blank(),
+        strip.placement = "outside",
+        axis.text.x = element_text(size = 7, angle = 0, hjust = 0.5, vjust = 0.5), # Adjust size, angle for X-axis text
+        axis.text.y = element_text(size = 5.5),
+        panel.spacing = unit(0.1, "lines"), # Adjust spacing between panels (if you have facets)
+        plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"), # Adjust overall plot margins
+        strip.text = element_text(size = 6) )
+  
+  return(stacked)
+}
+
+# List of cluster columns
+cluster_columns <- c('cluster_k2','cluster_k3', 'cluster_k4')
+plot_list <- list()
+
+for (col in cluster_columns) {
+  plot_list[[col]] <- generate_stacked_urban(dhs.seg_urban, col)
+}
+
+for (plot in plot_list) {
+  print(plot)
+}
+```
+
+### 3.4. Histogram (integer)
+```{r}
+plot_histogram_urban <- function(data, cluster_col) {
+  ggplot(data, aes(x = wealth.index.ur.ord)) + 
+    geom_histogram(binwidth = 1, fill = "#69b3a2", color = "#e9ecef", alpha = 0.9) + 
+    facet_wrap(as.formula(paste0("~ ", cluster_col))) + 
+    theme_minimal() + 
+    labs(x = "Wealth Index", y = "Count", title = paste("Histogram of Wealth Index by", cluster_col)) + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+
+cluster_cols <- paste0("cluster_k", 2:4)
+
+plot_list <- lapply(cluster_cols, function(cluster) {
+  plot_histogram_urban(dhs.seg_reform_urban, cluster)
+})
+
+print(plot_list[[1]])
+print(plot_list[[2]])
+print(plot_list[[3]])
+```
+
+### 3.5 Sankey plot
+```{r}
+seg.sankey.ur <- dhs.seg_reform_urban %>% 
+  select(cluster_k2, cluster_k3, cluster_k4) %>% 
+  rename(k2 = cluster_k2, k3 = cluster_k3, k4 = cluster_k4)
+
+links <- data.frame(source = character(), target = character(), value = character())
+
+for(i in 1:(ncol(seg.sankey.ur) - 1)){
+  tmp <- seg.sankey.ur %>%
+    group_by_(.dots = names(seg.sankey.ur)[c(i, i+1)]) %>%
+    summarize(value = n()) %>%
+    ungroup()
+  
+  tmp$source <- paste0(names(seg.sankey.ur)[i], "_", tmp[[1]])
+  tmp$target <- paste0(names(seg.sankey.ur)[i+1], "_", tmp[[2]])
+  
+  links <- rbind(links, tmp[, c("source", "target", "value")])
+}
+
+# Create nodes data frame for Sankey diagram
+nodes <- data.frame(name = unique(c(links$source, links$target)))
+
+links$IDsource <- match(links$source, nodes$name) - 1
+links$IDtarget <- match(links$target, nodes$name) - 1
+
+# Create Sankey diagram
+sankey <- sankeyNetwork(Links = links, Nodes = nodes, Source = "IDsource",
+                        Target = "IDtarget", Value = "value", NodeID = "name",
+                        units = "TWh", fontSize = 12, nodeWidth = 30)
+
+sankey
+```
+

@@ -1,0 +1,1500 @@
+---
+title: "6_Indonesia_DHS_age explore"
+author: "Lang Gao"
+date: "2023-09-30"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '6'
+  word_document:
+    toc: yes
+    toc_depth: '6'
+  pdf_document:
+    toc: yes
+    toc_depth: '6'
+---
+
+<style type="text/css">
+
+h1.title {
+  font-size: 21px;
+  color: Blue;
+  text-align: center;
+}
+h4.author { /* Header 4 - and the author and data headers use this too  */
+    font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+h4.date { /* Header 4 - and the author and data headers use this too  */
+  font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+</style>
+
+</br>
+
+
+***
+---
+
+#######################################
+1. Setting up the script
+#######################################
+
+Set up filepath, notation and packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(scipen = 100, digits = 4)
+
+#Set filepath
+setwd("/Users/langgao/Downloads/Freelancer projects/Sonder/Indonesia/Segmentation")
+```
+
+Load packages
+```{r,echo=TRUE}
+rm(list=ls())
+pacman::p_load("ggplots","tidyverse","survey","dplyr","forcats","haven")
+```
+
+Load dataset
+```{r}
+dhs.seg <- readRDS("5_Indonesia_DHS_exploratory.rds")
+dhs.seg.des <- readRDS("5_Indonesia_DHS_exploratory.des.rds")
+#dim(dhs.seg) #49627   311
+p_list <- list()
+```
+
+Function setup
+```{r}
+f_ageExplore <- function(measure,var.class,data=dhs.seg,survey.des=dhs.seg.des){
+  if(is.null(var.class)){
+    print('Variable type/class not provided so using default class coding, check if this is appropriate!')
+    v.class <- class(dhs.seg.des$variables[,measure])
+    
+    #recoding integers that are not 0/1 to numeric
+    v.class <- ifelse(v.class!='numeric' & v.class!='factor' & !all(na.omit(dhs.seg %>% pull(eval(parse(text=measure)))) %in% 0:1),'numeric',v.class)
+  }
+  else{v.class <- var.class}
+  
+  
+  ## 1: Descriptive tables: Contigency table for categorical/binary data, means and CIs for continuous by age group
+  if(v.class %in% c('binary','categorical','factor','character')){
+    des.res.count <- round(svytable(as.formula(paste0("~age.adj +",measure)), dhs.seg.des),digits=2)
+    ## proportion of education level within each age group (same as plot below)
+    des.res.prop <- round(prop.table(svytable(as.formula(paste0("~age.adj +",measure)), dhs.seg.des),margin=1)*100,2)  
+    
+    des.res <- list('tab.count'=des.res.count,'tab.prop'=des.res.prop)
+  }
+  else if(v.class %in% c('numeric')){
+    des.res <- svyby(as.formula(paste0("~",measure)), ~age.adj, dhs.seg.des, svymean,ci=TRUE,vartype="ci", na.rm=T)
+  }
+
+  
+  ### 2: Descriptive charts of distribution of vulnerability by age group ###
+  if(v.class %in% c('binary','categorical','factor','character')){
+    pdat <- data.frame(round(prop.table(svytable(as.formula(paste0("~age.adj +",measure)), dhs.seg.des),margin=1)*100,2))
+    names(pdat)[names(pdat)==measure] <- 'measure'
+    p <- ggplot(data=pdat,aes(fill=measure, y=Freq, x=age.adj)) + geom_bar(position="stack", stat="identity") +
+          xlab('Age group') + ylab(measure) + theme(legend.title = element_blank()) + ggtitle('Proportion of vulnerability by age group')
+  }
+  else if(v.class %in% c('numeric')){
+    pdat <- svyby(as.formula(paste0("~",measure)), ~age.adj, dhs.seg.des, svyquantile,       
+                  quantiles = c(0, 0.25, 0.5, 0.75, 1), na.rm = TRUE, ci=TRUE, 
+                  keep.var = TRUE, 
+                  vartype = "ci")
+    boxstats <- pdat[,1:6]
+    names(boxstats) <- c('age.adj','q0','q25','q50','q75','q100')
+    p <- ggplot(boxstats,
+                aes(x=age.adj, ymin=q0, lower=q25,middle=q50,
+                    upper=q75,ymax=q100)) + geom_boxplot(stat='identity') + 
+      coord_cartesian(ylim= c(min(boxstats[,2:6]),1.05*max(boxstats$q75))) + ylab(measure)
+    
+  }
+  
+  ### 3: Tests of association between age and vulnerability
+  if(v.class %in% c('binary','categorical','factor','character')){
+    svy.chi <- svychisq(as.formula(paste0('~',measure, "+ age.adj")), dhs.seg.des, statistic="Chisq")
+    mod.res <- svy.chi
+  }
+  else if(v.class %in% c('numeric')){
+    svy.glm <- svyglm(as.formula(paste0(measure, "~ age.adj")),family=gaussian(link ="identity"),design=dhs.seg.des, data=dhs.seg)
+    LRT.pval.measure <- regTermTest(svy.glm, 'age.adj', method = "LRT")$p
+    mod.res <- list('model'=summary(svy.glm),'global.p'=LRT.pval.measure)
+  }
+  
+  all_res <- list('stats'=des.res, 'plot'=p, 'model'=mod.res)
+  return(all_res)
+}
+```
+
+```{r}
+for (col_name in names(dhs.seg)) 
+  { if ("haven_labelled" %in% class(dhs.seg[[col_name]])) dhs.seg[[col_name]] <- as.character(dhs.seg[[col_name]])  }
+```
+
+
+## 1. Woman and her past experience
+Ensure the path
+```{r}
+plots_dir <- "Plots"
+if (!dir.exists(plots_dir)) {
+  dir.create(plots_dir)
+}
+```
+
+### 1.1. Women's education
+#### 1.1.1. ed.lev.ord
+```{r}
+vul.measure <- 'ed.lev.ord'
+dhs.seg$ed.lev.ord <- as.factor(dhs.seg$ed.lev.ord)
+#class(dhs.seg$ed.lev.ord)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off() #to close the PDF device when done
+
+#model
+out$model
+```
+
+#### 1.1.2. ed.lev.cat1
+```{r}
+vul.measure <- 'ed.lev.cat1'
+#class(dhs.seg$ed.lev.cat1)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off() #to close the PDF device when done
+
+#model
+out$model
+```
+
+#### 1.1.3. ed.lev.cat2
+```{r}
+vul.measure <- 'ed.lev.cat2'
+#class(dhs.seg$ed.lev.cat2)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off() #to close the PDF device when done
+
+#model
+out$model
+```
+
+#### 1.1.4. anyed.yn
+```{r}
+vul.measure <- 'anyed.yn'
+#class(dhs.seg$anyed.yn)
+dhs.seg$anyed.yn <- as.factor(dhs.seg$anyed.yn)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off() #to close the PDF device when done
+
+#model
+out$model
+```
+
+### 1.2. Partnership status
+#### 1.2.1. pship.cat
+```{r}
+vul.measure <- 'pship.status'
+#class(dhs.seg$pship.cat)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+
+```
+
+### 1.3. Age for the 1st coha/marri
+#### 1.3.1. age.1stcohab
+```{r}
+vul.measure <- 'age.1stcohab'
+#class(dhs.seg$age.1stcohab)
+out <- f_ageExplore(measure = vul.measure,var.class = 'numeric',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 1.3.2. age.1stcohab.cat
+```{r}
+vul.measure <- 'age.1stcohab.cat'
+#class(dhs.seg$age.1stcohab.cat)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 1.3.3. early.cohab.19
+```{r}
+vul.measure <- 'early.cohab.19'
+dhs.seg$early.cohab.19 <- as.factor(dhs.seg$early.cohab.19)
+#class(dhs.seg$early.cohab.19)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 1.4. Age at the 1st sex
+#### 1.4.1. age.1stsex
+```{r}
+vul.measure <- 'age.1stsex'
+#class(dhs.seg$age.1stsex)
+out <- f_ageExplore(measure = vul.measure,var.class = 'numeric',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 1.4.2. early.sex.17
+```{r}
+vul.measure <- 'early.sex.17'
+dhs.seg$early.sex.17 <- as.factor(dhs.seg$early.sex.17)
+#class(dhs.seg$early.sex.17)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 1.4.2. early.sex.19
+```{r}
+vul.measure <- 'early.sex.19'
+dhs.seg$early.sex.19 <- as.factor(dhs.seg$early.sex.19)
+#class(dhs.seg$early.sex.19)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 1.5. Number of pregnancy
+#### 1.5.1 preg.4plus
+```{r}
+vul.measure <- 'preg.4plus'
+dhs.seg$preg.4plus <- as.character(dhs.seg$preg.4plus)
+#class(dhs.seg$preg.4plus)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 1.5.2 preg.2plus
+```{r}
+vul.measure <- 'preg.2plus'
+dhs.seg$preg.2plus <- as.character(dhs.seg$preg.2plus)
+#class(dhs.seg$preg.2plus)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 1.5.3 preg.3plus
+```{r}
+vul.measure <- 'preg.3plus'
+dhs.seg$preg.3plus <- as.character(dhs.seg$preg.3plus)
+#class(dhs.seg$preg.3plus)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 1.6. Numer of children
+#### 1.6.1. num.children
+```{r}
+vul.measure <- 'num.children'
+class(dhs.seg$num.children)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 1.6.2 child.4plus
+```{r}
+vul.measure <- 'child.4plus'
+dhs.seg$child.4plus <- as.character(dhs.seg$child.4plus)
+#class(dhs.seg$child.4plus)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 1.6.3 child.2plus
+```{r}
+vul.measure <- 'child.2plus'
+dhs.seg$child.2plus <- as.factor(dhs.seg$child.2plus)
+#class(dhs.seg$child.2plus)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 1.6.3 child.3plus
+```{r}
+vul.measure <- 'child.3plus'
+dhs.seg$child.3plus <- as.factor(dhs.seg$child.3plus)
+#class(dhs.seg$child.3plus)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 1.6.4 num.child.alive.cat
+```{r}
+vul.measure <- 'num.child.alive.cat'
+#class(dhs.seg$num.child.alive.cat)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 1.7. marr.cohab
+```{r}
+vul.measure <- 'marr.cohab'
+dhs.seg$marr.cohab <- as.character(dhs.seg$marr.cohab) #marr.cohab was created as binary in script 4, numeric binary. as.factor in script 5 (for binary, the regression returns correctly for both binary numeric and binary charactor/factor)
+#class(dhs.seg$marr.cohab)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 1.8. months.cohabbirth.cat
+```{r}
+vul.measure <- 'months.cohabbirth.cat'
+#class(dhs.seg$months.cohabbirth.cat)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 1.9. Age for 1st birth
+#### 1.9.1. early.birth.19
+```{r}
+vul.measure <- 'early.birth.19'
+dhs.seg$early.birth.19 <- as.factor(dhs.seg$early.birth.19)
+#class(dhs.seg$early.birth.19)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 1.9.2. early.birth.25
+```{r}
+vul.measure <- 'early.birth.25'
+dhs.seg$early.birth.25 <- as.factor(dhs.seg$early.birth.25)
+#class(dhs.seg$early.birth.25)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+## 2. Household Relationship
+### 2.1. yrs.curr.pship
+```{r}
+vul.measure <- 'yrs.curr.pship'
+class(dhs.seg$yrs.curr.pship)
+#out <- f_ageExplore(measure = vul.measure,var.class = 'numeric',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 2.2. Partnership status
+#### 2.2.1. pship.cat
+
+#### 2.2.2. pship.duration
+```{r}
+vul.measure <- 'pship.duration'
+#class(dhs.seg$pship.duration)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 2.3. Number of children U5
+#### 2.3.1. num.under5.2plus
+```{r}
+vul.measure <- 'num.under5.2plus'
+dhs.seg$num.under5.2plus <- as.character(dhs.seg$num.under5.2plus)
+#class(dhs.seg$num.under5.2plus)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.3.2. num.under5.cat
+```{r}
+vul.measure <- 'num.under5.cat'
+#class(dhs.seg$num.under5.cat)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 2.4.Numer of children died
+#### 2.4.1. num.child.die.cat
+```{r}
+vul.measure <- 'num.child.die.cat'
+#class(dhs.seg$num.child.die.cat)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.4.2. num.child.die.yn
+```{r}
+vul.measure <- 'num.child.die.yn'
+dhs.seg$num.child.die.yn <- as.factor(dhs.seg$num.child.die.yn)
+#class(dhs.seg$num.child.die.yn)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 2.5. Number of kids living in the house
+#### 2.5.1. num.kids.house
+```{r}
+vul.measure <- 'num.kids.house'
+class(dhs.seg$num.kids.house)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.5.2. num.kids.house.cat
+```{r}
+vul.measure <- 'num.kids.house.cat'
+#class(dhs.seg$num.kids.house.cat)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.5.3. num.kids.house.2plus
+```{r}
+vul.measure <- 'num.kids.house.2plus'
+dhs.seg$num.kids.house.2plus <- as.factor(dhs.seg$num.kids.house.2plus)
+#class(dhs.seg$num.kids.house.2plus)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.5.4. num.kids.house.3plus
+```{r}
+vul.measure <- 'num.kids.house.3plus'
+dhs.seg$num.kids.house.3plus <- as.factor(dhs.seg$num.kids.house.3plus)
+#class(dhs.seg$num.kids.house.3plus)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 2.6. Partner's age
+#### 2.6.1. partner.age
+```{r}
+vul.measure <- 'partner.age'
+#class(dhs.seg$partner.age)
+out <- f_ageExplore(measure = vul.measure,var.class = 'numeric',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.6.2. partner.age.cat
+```{r}
+vul.measure <- 'partner.age.cat'
+#class(dhs.seg$partner.age.cat)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.6.3. age.diff
+```{r}
+vul.measure <- 'age.diff'
+#class(dhs.seg$age.diff)
+out <- f_ageExplore(measure = vul.measure,var.class = 'numeric',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.6.4. age.diff.cat
+```{r}
+vul.measure <- 'age.diff.cat'
+#class(dhs.seg$age.diff.cat)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.6.5. age.diff.cat.new
+```{r}
+vul.measure <- 'age.diff.cat.new'
+#class(dhs.seg$age.diff.cat.new)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 2.7. Partner's education
+#### 2.7.1. husb.ed.grp
+```{r}
+vul.measure <- 'husb.ed.grp'
+#class(dhs.seg$husb.ed.grp)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.7.2. husb.ed.mtprim
+```{r}
+vul.measure <- 'husb.ed.mtprim'
+#class(dhs.seg$husb.ed.mtprim)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.7.3. husb.ed.year
+```{r}
+vul.measure <- 'husb.ed.year'
+#class(dhs.seg$husb.ed.year)
+out <- f_ageExplore(measure = vul.measure,var.class = 'numeric',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.7.3. husb.ed.year
+```{r}
+vul.measure <- 'husb.ed.year'
+#class(dhs.seg$husb.ed.year)
+out <- f_ageExplore(measure = vul.measure,var.class = 'numeric',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 2.8. prev.pship
+```{r}
+vul.measure <- 'prev.pship'
+#class(dhs.seg$prev.pship)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 2.9 infecund.meno
+```{r}
+vul.measure <- 'infecund.meno'
+#class(dhs.seg$infecund.meno)
+out <- f_ageExplore(measure = vul.measure,var.class = 'numeric',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 2.10. Number of children 15 or older
+#### 2.10.1. num.15up
+```{r}
+vul.measure <- 'num.15up'
+#class(dhs.seg$num.15up)
+out <- f_ageExplore(measure = vul.measure,var.class = 'numeric',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.10.2. num.15up.cat
+```{r}
+vul.measure <- 'num.15up.cat'
+#class(dhs.seg$num.15up.cat)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.10.3. num.15up.4plus
+```{r, eval=FALSE}
+#this was removed after 1st round
+vul.measure <- 'num.15up.4plus'
+dhs.seg$num.15up.4plus <- as.character(dhs.seg$num.15up.4plus)
+#class(dhs.seg$num.15up.4plus)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 2.11. Number of children under 15 yrs
+#### 2.11.1. num.under15
+```{r}
+vul.measure <- 'num.under15'
+#class(dhs.seg$num.under15)
+out <- f_ageExplore(measure = vul.measure,var.class = 'numeric',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.11.2. num.under15.cat
+```{r}
+vul.measure <- 'num.under15.cat'
+#class(dhs.seg$num.under15.cat)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.11.3. num.under15.3plus
+```{r}
+vul.measure <- 'num.under15.3plus'
+dhs.seg$num.under15.3plus <- as.character(dhs.seg$num.under15.3plus)
+#class(dhs.seg$num.under15.3plus)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.11.4. num.under15.2plus
+```{r}
+vul.measure <- 'num.under15.2plus'
+dhs.seg$num.under15.2plus <- as.factor(dhs.seg$num.under15.2plus)
+#class(dhs.seg$num.under15.2plus)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.11.5. num.under15.cat1
+```{r}
+vul.measure <- 'num.under15.cat1'
+#class(dhs.seg$num.under15.cat1)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 2.12. Kid woman ration
+#### 2.12.1 hh.kidwom.rat.cat
+```{r}
+vul.measure <- 'hh.kidwom.rat.cat'
+class(dhs.seg$hh.kidwom.rat.cat)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.12.2 hh.kidwom.rat.2plus
+```{r}
+vul.measure <- 'hh.kidwom.rat.2plus'
+dhs.seg$hh.kidwom.rat.2plus <- as.factor(dhs.seg$hh.kidwom.rat.2plus)
+#class(dhs.seg$hh.kidwom.rat.2plus)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 2.13. Kinds U5
+#### 2.13.1. kids.under5
+```{r}
+vul.measure <- 'kids.under5'
+#class(dhs.seg$kids.under5)
+out <- f_ageExplore(measure = vul.measure,var.class = 'numeric',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.13.2. kids.under5.cat
+```{r}
+vul.measure <- 'kids.under5.cat'
+#class(dhs.seg$kids.under5.cat)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = paste0('Plots/age_explore',vul.measure,'.pdf'),height=8,width=12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+
+### 2.14. Kids 15 yrs or younger
+#### 2.14.1. kids.under15
+```{r}
+vul.measure <- 'kids.under15'
+#class(dhs.seg$kids.under15)
+out <- f_ageExplore(measure = vul.measure,var.class = 'numeric',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.14.2 kids.under15.cat
+```{r}
+vul.measure <- 'kids.under15.cat'
+#class(dhs.seg$kids.under15.cat)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 2.15. Number of children living away
+#### 2.15.1. num.kids.away
+```{r}
+vul.measure <- 'num.kids.away'
+#class(dhs.seg$num.kids.away)
+out <- f_ageExplore(measure = vul.measure,var.class = 'numeric',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.15.2. num.kids.away.cat
+```{r}
+vul.measure <- 'num.kids.away.cat'
+#class(dhs.seg$num.kids.away.cat)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 2.16. Age at the 1st birth
+#### 2.16.1. age.1stbrth
+```{r}
+vul.measure <- 'age.1stbrth'
+#class(dhs.seg$age.1stbrth)
+out <- f_ageExplore(measure = vul.measure,var.class = 'numeric',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.16.2. age.1stbrth.cat
+```{r}
+vul.measure <- 'age.1stbrth.cat'
+#class(dhs.seg$age.1stbrth.cat)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+### 2.17. Highest years of edu in HH
+#### 2.17.1 highestyearsedinHH
+```{r}
+vul.measure <- 'highestyearsedinHH.yrs'
+#class(dhs.seg$highestyearsedinHH.yrs)
+out <- f_ageExplore(measure = vul.measure,var.class = 'numeric',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+#### 2.17.2 highestyearsedinHH
+```{r}
+vul.measure <- 'highestyearsedinHH.7plus'
+#class(dhs.seg$highestyearsedinHH.7plus)
+out <- f_ageExplore(measure = vul.measure,var.class = 'character',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+
+## 4. Mental model
+#### 4.1. infecund.meno
+```{r}
+vul.measure <- 'infecund.meno'
+dhs.seg$infecund.meno <- as.factor(dhs.seg$infecund.meno)
+#class(dhs.seg$infecund.meno)
+out <- f_ageExplore(measure = vul.measure,var.class = 'factor',data = dhs.seg,survey.des = dhs.seg.des)
+
+#table
+out$stats
+#plot
+plot(out$plot)
+
+#plots single plot per pdf 
+pdf(file = file.path(plots_dir, paste0("age_expl_", vul.measure, '.pdf')), height = 8, width = 12)
+plot(out$plot)
+dev.off()
+
+#model
+out$model
+```
+

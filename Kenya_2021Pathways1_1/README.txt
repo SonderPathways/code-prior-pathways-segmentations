@@ -1,0 +1,1 @@
+For Pathways segmentation work prior to the partnership split (Feb 2024), please see here: https://github.com/hpm7/KE_2022_Pathways_Segmentation_Oct2023_Feb2024

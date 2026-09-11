@@ -1,0 +1,3217 @@
+---
+title: "Wmchild_exploratory_Part 3 (domain 3)"
+author: "Lang Gao"
+date: "2024-02-27"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '6'
+  word_document:
+    toc: yes
+    toc_depth: '6'
+  pdf_document:
+    toc: yes
+    toc_depth: '6'
+---
+
+<style type="text/css">
+
+h1.title {
+  font-size: 21px;
+  color: Blue;
+  text-align: center;
+}
+h4.author { /* Header 4 - and the author and data headers use this too  */
+    font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+h4.date { /* Header 4 - and the author and data headers use this too  */
+  font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+</style>
+
+</br>
+
+
+***
+---
+
+#######################################
+1. Setting up the script
+#######################################
+
+Set up filepath, notation and packages
+```{r setup, include=FALSE, fig.path='exploratory/', out.path='exploratory/'}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(scipen = 100, digits = 4)
+
+#Set filepath
+setwd("/Users/langgao/Downloads/Freelancer projects/Sonder/Indonesia/Segmentation")
+```
+
+Load packages
+```{r,echo=TRUE}
+rm(list=ls())
+pacman::p_load("tidyverse", "knitr", "data.table", "lmtest", "logbin","survey","dplyr","forcats","haven")
+```
+
+Read in data
+```{r}
+dhs.seg <- readRDS("Indonesia_DHS_wmchild.rds")
+#dim(dhs.seg) #34199   311
+
+vulnerability <- readRDS("4_Indonesia_DHS_vulnerability.rds")
+vulnerability <- vulnerability %>% 
+  filter(v201 >0)
+#dim(vulnerability) #34199   274
+```
+
+
+## Define categorical age variable for adjustment
+### Cutoffs defined based on exploratory analysis with outcomes
+```{r}
+#dhs.seg$age.yrs
+dhs.seg$age.adj <- cut(dhs.seg$age.yrs,
+                       breaks = c(14, 19, 24, 29, 34, 39, 44, 49), 
+                       labels = c("15-19", "20-24", "25-29", "30-34", "35-39", "40-44", "45-49"))
+```
+
+### Group Outcomes
+```{r}
+outcomes.list <- c("wom.hlthck","hb.1","anc.num","anc.4plus","anyanc","anc.1sttri", "bc.ever","stl.cnt","fp.mod.ever", "baby.hlthck","breastfed","breastfed2","breastfed2.excl","low.wgt.last","zerodose.yn","dpt1.yn","u1mort.yn","u5mort.yn")
+
+#table(dhs.seg$anc.1stvisit)
+#Exclude anc.1stvisit and anc.month for now because we already have any.anc and anc.1sttri; similarily, exclude zerodosecnt, fp.mod.now, and preg.termin, for now
+```
+
+### Set survey design matrix
+```{r}
+dhs.seg.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg)
+
+saveRDS(dhs.seg.des, file = "Indonesia_DHS_wmchild.des.rds")
+```
+
+######################################
+2. Define Functions
+#######################################
+
+# Functions
+## Define functions to explore
+```{r}
+#to explore the association between two variables, taking into account of survey design (wt, sampling) and age adjustment (if needed); and returns to: generate summary statistics, conduct regression analyses, and produce visualizations to facilitate the understand the relationship between the variables
+#if (!require(dplyr)) {install.packages("dplyr")}
+
+f_pattern_explore <- function(measure, outcome, poisson = FALSE, age.adjust = TRUE){
+  
+  # Indicator if outcome is binary
+  binary.exp <- all(na.omit(dhs.seg %>% pull(eval(parse(text=measure)))) %in% 0:1)
+  binary.out <- all(na.omit(dhs.seg %>% pull(eval(parse(text=outcome)))) %in% 0:1)
+  
+  # Look at summary stats (paste0 concatenates into string. pull takes one column)
+  if(binary.exp == FALSE & (is.integer(dhs.seg %>% pull(eval(parse(text=measure)))) | is.numeric(dhs.seg %>% pull(eval(parse(text=measure)))))) {
+    stats <- svyby(as.formula(paste0("~",measure)), as.formula(paste0("~",outcome)), dhs.seg.des, svymean,ci=TRUE,vartype="ci", na.rm=T)
+  } else if (binary.out == FALSE & (is.integer(dhs.seg %>% pull(eval(parse(text=outcome)))) | is.numeric(dhs.seg %>% pull(eval(parse(text=outcome)))))) {
+    stats <-svyby(as.formula(paste0("~",outcome)), as.formula(paste0("~",measure)), dhs.seg.des, svymean,ci=TRUE,vartype="ci", na.rm=T)
+  } else {
+    stats <- prop.table(svytable(as.formula(paste0("~",outcome,"+",measure)), dhs.seg.des), margin = 2)
+  }
+  
+  # Test association - age adjustment
+  if(age.adjust == TRUE) {
+    if(binary.out == FALSE){
+      if(poisson == TRUE) {
+        svy.glm <- svyglm(as.formula(paste0(outcome, "~", measure, "+", "age.adj")),family=quasipoisson,design=dhs.seg.des, data=dhs.seg)
+      }else{
+        svy.glm <- svyglm(as.formula(paste0(outcome, "~", measure, "+", "age.adj")),family=gaussian(link ="identity"),design=dhs.seg.des, data=dhs.seg)
+      }
+    }else{
+      svy.glm<-svyglm(as.formula(paste0(outcome, "~", measure, "+", "age.adj")),family=quasibinomial,design=dhs.seg.des, data=dhs.seg)
+    }
+  }
+  
+  # Test association - no age adjustment
+  if(age.adjust == FALSE) {
+    if(binary.out == FALSE){
+      if(poisson == TRUE) {
+        svy.glm <- svyglm(as.formula(paste0(outcome, "~", measure)),family=quasipoisson,design=dhs.seg.des, data=dhs.seg)
+      }else{
+        svy.glm <- svyglm(as.formula(paste0(outcome, "~", measure)),family=gaussian(link ="identity"),design=dhs.seg.des, data=dhs.seg)
+      }
+    }else{
+      svy.glm<-svyglm(as.formula(paste0(outcome, "~", measure)),family=quasibinomial,design=dhs.seg.des, data=dhs.seg)
+    }
+  }
+  
+  # Model summary 
+  summary <- as.data.frame(summary(svy.glm)$coefficients)
+  summary$sig <-  ifelse(summary$`Pr(>|t|)`<0.001, "xxx", ifelse(summary$`Pr(>|t|)`<0.01, "xx", ifelse(summary$`Pr(>|t|)`<0.05, "x", ifelse(is.na(summary$`Pr(>|t|)`), "", ""))))
+  summary$sig[1] <- ""
+  
+  LRT.pval.measure <- regTermTest(svy.glm, measure, method = "LRT")$p
+  if(age.adjust == TRUE){
+    LRT.pval.age <- regTermTest(svy.glm, "age.adj", method = "LRT")$p
+  } else {
+    LRT.pval.age <- NA
+  } #cbind drops zero row and zero column, combines rows or columns
+  LRT.pval <- cbind.data.frame("measure" = LRT.pval.measure, "age" = LRT.pval.age)
+  
+  # Plot coefficients
+  if(age.adjust == TRUE){
+    ncoefs <- length(svy.glm$coefficients) - (length(na.omit(unique(dhs.seg$age.adj))) - 1)
+  } else {
+    ncoefs <- length(svy.glm$coefficients)
+  }
+  
+  if(ncoefs ==2){
+    labs = measure
+  } else {
+    labs = svy.glm$xlevels[[1]][-1]
+  }
+  coefs <- cbind.data.frame(labels = labs, coefs = as.vector(svy.glm$coefficients[2:ncoefs]), 
+                            se = as.vector(coef(summary(svy.glm))[2:ncoefs,2]),
+                            sig = as.vector(summary$sig[2:ncoefs]))
+  coefs$sig.bin <- ifelse(coefs$sig %in% c("xxx", "xx", "x"), "yes", "no")
+  
+  plot.coefs <- ggplot(coefs, aes(x=labels, y=coefs)) + 
+    geom_pointrange(aes(ymin=coefs - 1.96*se, ymax=coefs + 1.96*se, color = sig.bin)) + 
+    scale_color_manual(name = "significance",
+                       breaks = c("no", "yes"),
+                       values = c("Black", "Red")) +
+    coord_flip()+
+    labs(x=measure, y="Adjusted coefficients and CI", title=paste0("Association of ", measure, " and ", outcome)) + 
+    theme(legend.position = "none") 
+  
+  # Plot predicted probabilities
+  pred.data<-data.frame(unique(na.omit(dhs.seg %>% pull(eval(parse(text=measure))))))
+  names(pred.data) <- substitute(measure)
+  pred.data$age.adj <- "30-34"
+  
+  probabilities <- predict(svy.glm, pred.data, type = "response", se.fit=T)
+  
+  prob1<-as.data.frame(probabilities)
+  prob1$lower<- prob1$response - (1.96*prob1$SE)
+  prob1$upper<- prob1$response + (1.96*prob1$SE)
+  prob1$levels<- pred.data[,1]
+  
+  significance <- data.frame("levels" = coefs$labels, "sig.bin" = coefs$sig.bin)
+  prob1 <- merge(prob1, significance, by="levels", all.x = T)
+  
+  plot.prob <- ggplot(prob1, aes(x=levels, y=response)) + 
+    geom_point(aes(colour = sig.bin), alpha=0.9, size=2, show.legend = FALSE) +
+    geom_errorbar(aes(ymin=lower, ymax=upper, colour = sig.bin), linewidth=0.5, width=.4, show.legend = FALSE) +
+    geom_text(aes(y=response, x=levels, label=round(response,2)), vjust=-1.2, hjust=.5) +
+    scale_color_manual(name = "significance",
+                       breaks = c("no", "yes"),
+                       values = c("Black", "Red")) +
+    coord_flip()+
+    xlab("") +
+    ylab(paste0("Probability of ",outcome)) +
+    theme(axis.text.y = element_text(size = 10), axis.text.x = element_text(size = 12), axis.title=element_text(size=12))
+  
+  var = substitute(measure)
+  
+  out <- list(stats, summary, LRT.pval, plot.prob, plot.coefs, var)
+  return(out) 
+}
+```
+
+## Multiplot function for combining plots
+```{r}
+# to arrange multiple plots in a grid layout
+multiplot <- function(..., plotlist=NULL, file, cols=2, layout=NULL) {
+  library(grid)
+  
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+  
+  numPlots = length(plots)
+  
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                     ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+  
+  if (numPlots==1) {
+    print(plots[[1]])
+    
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+    
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+      
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+
+#######################################
+3. Explore Associations
+#######################################
+
+Note
+```{r,eval=FALSE}
+# For a new variable, copy and paste the code under an existing variable. Replace the variable name, and then find and replace the prefix (e.g. "ed.") with a new prefix for the variable of interest. Among the results, focus on the plots of the predicted probabilities (plots.prob) first. These are grouped by mom-focused and baby-focused outcomes. The color coding is: grey - reference level, red = p<0.05, black = p>=0.05.
+# Whether or not any levels were significanly different from the null for each outcome will be added to a data frame that can be exported.
+
+# for list of variables used, see exploratory_analysis_external.xls
+```
+
+```{r}
+assoc.summary <- as.data.frame(matrix(nrow = length(names(vulnerability)), ncol = length(outcomes.list)))
+colnames(assoc.summary) <- outcomes.list
+assoc.summary$factor <- names(vulnerability)
+assoc.summary <- assoc.summary %>% select(factor, everything())
+assoc.summary <- assoc.summary[11:length(names(vulnerability)),]
+saveRDS(assoc.summary, file = "5_assoc.summary.rds")
+```
+
+
+## Poisson distribution outcomes
+```{r}
+# Define outcome variables
+outcomes.list <- c("wom.hlthck","hb.1","anc.num","anc.4plus","anyanc","anc.1sttri", "bc.ever","fp.mod.ever","stl.cnt", "baby.hlthck", "breastfed", "breastfed2", "breastfed2.excl", "low.wgt.last", "zerodose.yn", "dpt1.yn", "u1mort.yn", "u5mort.yn")
+
+# Check if a variable follows a Poisson distribution
+is_poisson <- function(var_name, dataset) {
+  var <- dataset[, get(var_name)]
+  # Check if it's numeric and not NA
+  if (!is.numeric(var) || any(is.na(var))) {
+    return(FALSE)
+  }
+  # Check if it's non-negative integers
+  if (!all(var >= 0) || any(!var %% 1 == 0)) {
+    return(FALSE)
+  }
+  # Additional checks can be added if needed
+  return(TRUE)
+}
+
+# Check which outcome variables have a Poisson distribution
+poisson_vars <- character(0)
+for (var_name in outcomes.list) {
+  if (is_poisson(var_name, dhs.seg)) {
+    poisson_vars <- c(poisson_vars, var_name)
+  }
+}
+
+# Print the outcome variables with a Poisson distribution
+print(poisson_vars)
+# "fp.mod.ever","zerodose.yn","dpt1.yn","u1mort.yn","u5mort.yn" follow a poisson distribution. Note that when before (when women without children were included, only "fp.mod.ever" showed a poisson distribution)
+
+poisson.yn <- c("fp.mod.ever","zerodose.yn","dpt1.yn","u1mort.yn","u5mort.yn") 
+```
+
+All predictor variables
+```{r, eval=FALSE}
+#names(vulnerability)
+#measure <- names(vulnerability)[-c(1:10)] #exclude "age.yrs" for now
+#print(measure)
+```
+
+Age unadjusted Analysis
+List of outcome variables
+```{r, eval=FALSE}
+# List of outcome variable names
+# mom-focused:"wom.hlthck","hb.1","anc.num","anc.4plus","anyanc","anc.1sttri", "bc.ever","fp.mod.ever","stl.cnt"
+# baby-focused: "baby.hlthck","breastfed","breastfed2","breastfed2.excl","low.wgt.last","zerodose.yn","dpt1.yn","u1mort.yn","u5mort.yn"
+
+#var_names <- c("wom.hlthck","hb.1","anc.num","anc.4plus","anyanc","anc.1sttri", "bc.ever","fp.mod.ever","stl.cnt", "baby.hlthck","breastfed","breastfed2","breastfed2.excl","low.wgt.last","zerodose.yn","dpt1.yn","u1mort.yn","u5mort.yn")
+
+# Check the class of each variable
+#class_of_vars <- sapply(dhs.seg[, ..var_names], class)
+
+# Print the result
+#print(class_of_vars)
+```
+List of vulnerability measures
+```{r, eval=FALSE}
+#names(vulnerability[,-(1:130)])
+```
+
+# 3. Household economics and living conditions
+All predictor variables for this domain
+```{r,eval=FALSE}
+#var_names <- c("working","working.yn","workingnow.yn","work.seasonal","partner.working","partner.working.yn","partner.workingnow.yn" , "work.type", "work.type.prof","women.bank.acct","migrant","migrant.yn","hh.electricity","hh.radio","hh.tv","hh.refrig","hh.tele","hh.fan","hh.wash","hh.air","hh.bike","hh.motor","hh.car","hh.phone","hh.watch","hh.computer","hh.land","hh.land.ha","hh.animal","hh.floor","hh.wall","hh.roof","hh.rooms","hh.rooms.2plus","hh.toilet.type","latrine","toilet.facility","hh.toilet.share","hh.where.cook","hh.cook.inside","hh.cook.inside.yn","water","hh.watpur.appr","hh.wat.time","hh.wat.time.yn","hh.wat.interrupt","hh.sanitation","hh.bank.acct","wealth.index","wealth.index.ur","wealth.index.poor","wealth.index.ur.ord") 
+
+# Check the class of each variable
+#class_of_vars <- sapply(dhs.seg[, ..var_names], class)
+
+# Print the result
+#print(class_of_vars)
+```
+
+### 3.1. working
+```{r}
+#class(dhs.seg$working) # no need to have order
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("working", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.1.1 working.new
+```{r}
+class(dhs.seg$working.new) # no need to have order
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("working.new", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.2. working.yn
+```{r}
+dhs.seg$working.yn <- as.factor(dhs.seg$working.yn)
+dhs.seg.des$variables$working.yn <- as.factor(dhs.seg.des$variables$working.yn)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("working.yn", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.3. workingnow.yn
+```{r}
+dhs.seg$workingnow.yn <- as.factor(dhs.seg$workingnow.yn)
+dhs.seg.des$variables$workingnow.yn <- as.factor(dhs.seg.des$variables$workingnow.yn)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("workingnow.yn", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.4. work.seasonal
+```{r}
+#character, no need for factor level in this chunk
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("work.seasonal", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.5. partner.working
+```{r}
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("partner.working", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.6. partner.working.yn
+```{r}
+dhs.seg$partner.working.yn <- as.factor(dhs.seg$partner.working.yn)
+dhs.seg.des$variables$partner.working.yn <- as.factor(dhs.seg.des$variables$partner.working.yn)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("partner.working.yn", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.7. partner.workingnow.yn
+```{r}
+dhs.seg$partner.workingnow.yn <- as.factor(dhs.seg$partner.workingnow.yn)
+dhs.seg.des$variables$partner.workingnow.yn <- as.factor(dhs.seg.des$variables$partner.workingnow.yn)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("partner.workingnow.yn", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.8. work.type
+```{r}
+#levels(dhs.seg$work.type)
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("work.type", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.9. work.type.prof
+```{r}
+dhs.seg$work.type.prof <- as.factor(dhs.seg$work.type.prof)
+dhs.seg.des$variables$work.type.prof <- as.factor(dhs.seg.des$variables$work.type.prof)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("work.type.prof", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.9.1. work.type.new
+```{r}
+dhs.seg$work.type.new <- as.factor(dhs.seg$work.type.new)
+dhs.seg.des$variables$work.type.new <- as.factor(dhs.seg.des$variables$work.type.new)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("work.type.new", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.10. women.bank.acct
+```{r}
+#class(dhs.seg$women.bank.acct)
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("women.bank.acct", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.11. migrant
+```{r}
+#no specific order needed
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("migrant", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.12. migrant.yn
+```{r}
+dhs.seg$migrant.yn <- as.factor(dhs.seg$migrant.yn)
+dhs.seg.des$variables$migrant.yn <- as.factor(dhs.seg.des$variables$migrant.yn)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("migrant.yn", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.13. hh.electricity
+```{r}
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.electricity", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.14. hh.radio
+```{r}
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.radio", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.15. hh.tv
+```{r}
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.tv", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.16. hh.refrig
+```{r}
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.refrig", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.17. hh.tele
+```{r}
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.tele", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.18. hh.fan
+```{r}
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.fan", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.19. hh.wash
+```{r}
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.wash", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.20. hh.air
+```{r}
+dhs.seg$hh.air <- as.factor(dhs.seg$hh.air)
+dhs.seg.des$variables$hh.air <- as.factor(dhs.seg.des$variables$hh.air)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.air", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.20.1. house.index
+```{r}
+dhs.seg$house.index <- as.factor(dhs.seg$house.index)
+dhs.seg.des$variables$house.index <- as.factor(dhs.seg.des$variables$house.index)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("house.index", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.21. hh.bike
+```{r}
+#class(dhs.seg$hh.bike)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.bike", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.22. hh.motor
+```{r}
+#dhs.seg$hh.motor
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.motor", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.23. hh.car
+```{r}
+#table(dhs.seg$hh.car)
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.car", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.23.1. vehic.index
+```{r}
+dhs.seg$vehic.index <- as.factor(dhs.seg$vehic.index)
+dhs.seg.des$variables$vehic.index <- as.factor(dhs.seg.des$variables$vehic.index)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("vehic.index", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.24. hh.phone
+```{r}
+#table(dhs.seg$hh.phone)
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.phone", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.25. hh.watch
+```{r}
+#table(dhs.seg$hh.watch)
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.watch", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.26. hh.cart
+```{r, eval=FALSE}
+#table(dhs.seg$hh.cart)
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.cart", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.27. hh.computer
+```{r}
+#table(dhs.seg$hh.computer)
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.computer", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.28. person.index
+```{r}
+dhs.seg$person.index <- as.factor(dhs.seg$person.index)
+dhs.seg.des$variables$person.index <- as.factor(dhs.seg.des$variables$person.index)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("person.index", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.29. hh.land
+```{r}
+#table(dhs.seg$hh.land)
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.land", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.30. hh.land.ha
+```{r}
+#dhs.seg$hh.land.ha
+#dhs.seg$hh.land.ha <- as.factor(dhs.seg$hh.land.ha)
+#dhs.seg.des$variables$hh.land.ha <- as.factor(dhs.seg.des$variables$hh.land.ha)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.land.ha", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.31. hh.animal
+```{r}
+#table(dhs.seg$hh.animal)
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.animal", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.31.1. product.index
+```{r}
+dhs.seg$product.index <- as.factor(dhs.seg$product.index)
+dhs.seg.des$variables$product.index <- as.factor(dhs.seg.des$variables$product.index)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("product.index", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+
+### 3.32. asset.buffaloe
+```{r,eval=FALSE}
+#table(dhs.seg$asset.buffaloe) #numeric binary
+dhs.seg$asset.buffaloe <- as.factor(dhs.seg$asset.buffaloe)
+dhs.seg.des$variables$asset.buffaloe <- as.factor(dhs.seg.des$variables$asset.buffaloe)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("asset.buffaloe", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.33. asset.horses
+```{r,eval=FALSE}
+#table(dhs.seg$asset.horses)
+dhs.seg$asset.horses <- as.factor(dhs.seg$asset.horses)
+dhs.seg.des$variables$asset.horses <- as.factor(dhs.seg.des$variables$asset.horses)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("asset.horses", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.34. asset.chickens
+```{r,eval=FALSE}
+#table(dhs.seg$asset.chickens)
+dhs.seg$asset.chickens <- as.factor(dhs.seg$asset.chickens)
+dhs.seg.des$variables$asset.chickens <- as.factor(dhs.seg.des$variables$asset.chickens)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("asset.chickens", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.35. asset.livestock.types
+```{r,eval=FALSE}
+#class(dhs.seg$asset.livestock.types)
+dhs.seg$asset.livestock.types <- as.factor(dhs.seg$asset.livestock.types)
+dhs.seg.des$variables$asset.livestock.types <- as.factor(dhs.seg.des$variables$asset.livestock.types)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("asset.livestock.types", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.36. hh.floor
+```{r}
+#class(dhs.seg$hh.floor)
+#table(dhs.seg$hh.floor)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.floor", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.37. hh.wall
+```{r}
+#character, no need for factor in this chunk; same results return from factor and character
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.wall", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.38. hh.roof
+```{r}
+dhs.seg$hh.roof <- as.factor(dhs.seg$hh.roof)
+dhs.seg.des$variables$hh.roof <- as.factor(dhs.seg.des$variables$hh.roof)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.roof", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.38.1. material.index
+```{r}
+dhs.seg$material.index <- as.factor(dhs.seg$material.index)
+dhs.seg.des$variables$material.index <- as.factor(dhs.seg.des$variables$material.index)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("material.index", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.39. hh.rooms
+```{r}
+dhs.seg$hh.rooms <- as.factor(dhs.seg$hh.rooms)
+dhs.seg.des$variables$hh.rooms <- as.factor(dhs.seg.des$variables$hh.rooms)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.rooms", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.40. hh.rooms.2plus
+```{r}
+dhs.seg$hh.rooms.2plus <- as.factor(dhs.seg$hh.rooms.2plus)
+dhs.seg.des$variables$hh.rooms.2plus <- as.factor(dhs.seg.des$variables$hh.rooms.2plus)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.rooms.2plus", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.41. hh.toilet.type
+```{r}
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.toilet.type", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.41.1. hh.toilet.flush
+```{r}
+#class(dhs.seg$hh.toilet.flush)
+dhs.seg$hh.toilet.flush <- as.factor(dhs.seg$hh.toilet.flush)
+dhs.seg.des$variables$hh.toilet.flush <- as.factor(dhs.seg.des$variables$hh.toilet.flush)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.toilet.flush", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.42. latrine
+```{r}
+#table(dhs.seg$latrine) #numeric binary
+dhs.seg$latrine <- as.factor(dhs.seg$latrine)
+dhs.seg.des$variables$latrine <- as.factor(dhs.seg.des$variables$latrine)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("latrine", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.43. toilet.facility
+```{r}
+#table(dhs.seg$toilet.facility)
+dhs.seg$toilet.facility <- as.factor(dhs.seg$toilet.facility)
+dhs.seg.des$variables$toilet.facility <- as.factor(dhs.seg.des$variables$toilet.facility)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("toilet.facility", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.44. hh.toilet.share
+```{r}
+#table(dhs.seg$hh.toilet.share) #character
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.toilet.share", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.45. hh.cook.inside
+```{r}
+#table(dhs.seg$hh.cook.inside)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.cook.inside", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.46. hh.where.cook
+```{r}
+#table(dhs.seg$hh.where.cook)
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.where.cook", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.47. hh.cook.inside.yn
+```{r}
+#class(dhs.seg$hh.cook.inside.yn) #numeric binary
+dhs.seg$hh.cook.inside.yn <- as.factor(dhs.seg$hh.cook.inside.yn)
+dhs.seg.des$variables$hh.cook.inside.yn <- as.factor(dhs.seg.des$variables$hh.cook.inside.yn)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.cook.inside.yn", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.47.1. hh.cook.kitchen
+```{r}
+dhs.seg$hh.cook.kitchen <- as.factor(dhs.seg$hh.cook.kitchen)
+dhs.seg.des$variables$hh.cook.kitchen <- as.factor(dhs.seg.des$variables$hh.cook.kitchen)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.cook.kitchen", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.48. water
+```{r}
+#table(dhs.seg$water) #numeric binary
+dhs.seg$water <- as.factor(dhs.seg$water)
+dhs.seg.des$variables$water <- as.factor(dhs.seg.des$variables$water)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("water", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.48.1. water.cat
+```{r}
+dhs.seg$water.cat <- as.factor(dhs.seg$water.cat)
+dhs.seg.des$variables$water.cat <- as.factor(dhs.seg.des$variables$water.cat)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("water.cat", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.49. hh.watpur.appr
+```{r}
+#table(dhs.seg$hh.watpur.appr)
+dhs.seg$hh.watpur.appr <- as.factor(dhs.seg$hh.watpur.appr)
+dhs.seg.des$variables$hh.watpur.appr <- as.factor(dhs.seg.des$variables$hh.watpur.appr)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.watpur.appr", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.50. hh.wat.time
+```{r}
+#table(dhs.seg$hh.wat.time)
+dhs.seg$hh.wat.time <- as.factor(dhs.seg$hh.wat.time)
+dhs.seg.des$variables$hh.wat.time <- as.factor(dhs.seg.des$variables$hh.wat.time)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.wat.time", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.51. hh.wat.time.yn
+```{r}
+dhs.seg$hh.wat.time.yn <- as.factor(dhs.seg$hh.wat.time.yn)
+dhs.seg.des$variables$hh.wat.time.yn <- as.factor(dhs.seg.des$variables$hh.wat.time.yn)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.wat.time.yn", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.51.1. hh.wat.time.11plus
+```{r}
+dhs.seg$hh.wat.time.11plus <- as.factor(dhs.seg$hh.wat.time.11plus)
+dhs.seg.des$variables$hh.wat.time.11plus <- as.factor(dhs.seg.des$variables$hh.wat.time.11plus)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.wat.time.11plus", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.52. hh.wat.interrupt
+```{r}
+#table(dhs.seg$hh.wat.interrupt) #character, no need for level in this chunck
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.wat.interrupt", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.53. hh.sanitation
+```{r}
+#table(dhs.seg$hh.sanitation)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.sanitation", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.53.1. hh.sanitation.cat
+```{r}
+#class(dhs.seg$hh.sanitation.cat)
+dhs.seg$hh.sanitation.cat <- as.factor(dhs.seg$hh.sanitation.cat)
+dhs.seg.des$variables$hh.sanitation.cat <- as.factor(dhs.seg.des$variables$hh.sanitation.cat)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.sanitation.cat", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.53.2. hh.sanitation.cat1
+```{r}
+#class(dhs.seg$hh.sanitation.cat1)
+dhs.seg$hh.sanitation.cat1 <- as.factor(dhs.seg$hh.sanitation.cat1)
+dhs.seg.des$variables$hh.sanitation.cat1 <- as.factor(dhs.seg.des$variables$hh.sanitation.cat1)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.sanitation.cat1", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.54. hh.sanitation.yn
+```{r,eval=FALSE}
+dhs.seg$hh.sanitation.yn <- as.factor(dhs.seg$hh.sanitation.yn)
+dhs.seg.des$variables$hh.sanitation.yn <- as.factor(dhs.seg.des$variables$hh.sanitation.yn)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.sanitation.yn", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.55. hh.bank.acct
+```{r}
+#table(dhs.seg$hh.bank.acct)
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("hh.bank.acct", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.56. wealth.index
+```{r}
+#levels(dhs.seg$wealth.index)
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("wealth.index", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.57. wealth.index.ur
+```{r}
+#levels(dhs.seg$wealth.index.ur)
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("wealth.index.ur", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.58. wealth.index.poor
+```{r}
+#table(dhs.seg$wealth.index.poor)
+dhs.seg$wealth.index.poor <- as.factor(dhs.seg$wealth.index.poor)
+dhs.seg.des$variables$wealth.index.poor <- as.factor(dhs.seg.des$variables$wealth.index.poor)
+
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("wealth.index.poor", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```
+
+### 3.59. wealth.index.ur.ord
+```{r}
+#levels(dhs.seg$wealth.index.poor)
+stats <- list()
+summary <- list()
+LRT.vals <- list()
+any.sig.levels <- as.data.frame(matrix(nrow = 1, ncol = length(outcomes.list)))
+colnames(any.sig.levels) <- outcomes.list
+plots.prob <- list()
+plots.coefs <- list()
+
+for(i in 1:length(outcomes.list)){
+      out <- f_pattern_explore("wealth.index.ur.ord", outcomes.list[i], poisson = poisson.yn[i], age.adjust = FALSE)
+      stats[[i]] <- out[[1]]
+      summary[[i]] <- out[[2]]
+      LRT.vals[[i]] <- out[[3]]
+      any.sig.levels[[i]] <- ifelse(out[[3]][1] < 0.05, 1, 0)
+      plots.prob[[i]] <- out[[4]]
+      plots.coefs[[i]] <- out[[5]]
+      var <- out[[6]]
+    }
+
+names(stats) <- outcomes.list
+names(summary) <- outcomes.list
+names(LRT.vals) <- outcomes.list
+names(plots.prob) <- outcomes.list
+names(plots.coefs) <- outcomes.list
+
+# Review the results
+stats
+summary
+LRT.vals
+
+#mom-focused
+multiplot(plotlist = plots.prob[1:9])
+#baby-focused
+multiplot(plotlist = plots.prob[10:18])
+```

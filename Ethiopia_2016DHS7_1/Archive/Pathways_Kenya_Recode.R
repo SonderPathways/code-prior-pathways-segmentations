@@ -1,0 +1,659 @@
+library(foreign)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(gmodels)
+library(caret)
+library(gbm)
+library(psych)
+library(survey)
+library(haven)
+library(psych)
+library(sjPlot)
+
+ke<-read.spss("C:\\Users\\elisabethro\\OneDrive - Bill & Melinda Gates Foundation\\Pathways\\rawdata\\Pathways Cache\\Final Data Sets\\Pathways main survey tool - Kenya_Jan 3 ALL MERGED ITYPES.sav")
+ke<-as.data.frame(ke)
+ke<-subset(ke, ke$ITYPclean==1)
+
+# New seg
+old<-c("RF4",
+       "RF1",
+       "RM1",
+       "RM3",
+       "RM2",
+       "UF3",
+       "UF1",
+       "UM5",
+       "UM1")
+new<-c("RF2",
+       "RF4",
+       "RM3",
+       "RM2",
+       "RM4",
+       "UF2",
+       "UF4",
+       "UM1",
+       "UM4")
+new.seg<-data.frame("urfm.seg"=old, "new.seg"=new)
+
+# Unique ID
+ke$caseid<-paste(ke$PSUclean,ke$HHIDclean,ke$ITYPclean)
+
+# Index of gender roles
+ke$b011.num<-ifelse(ke$T_B01_1=="Completely disagree",5,
+                    ifelse(ke$T_B01_1=="Disagree",4,
+                           ifelse(ke$T_B01_1=="Neither agree nor disagree",3,
+                                  ifelse(ke$T_B01_1=="Agree",2,1))))
+ke$b011.num[is.na(ke$b011.num)] <- 3.5
+ke$b013.num<-ifelse(ke$T_B01_3=="Completely disagree",5,
+                    ifelse(ke$T_B01_3=="Disagree",4,
+                           ifelse(ke$T_B01_3=="Neither agree nor disagree",3,
+                                  ifelse(ke$T_B01_3=="Agree",2,1))))
+ke$b015.num<-ifelse(ke$T_B01_5=="Completely disagree",5,
+                    ifelse(ke$T_B01_5=="Disagree",4,
+                           ifelse(ke$T_B01_5=="Neither agree nor disagree",3,
+                                  ifelse(ke$T_B01_5=="Agree",2,1))))
+ke$b016.num<-ifelse(ke$T_B01_6=="Completely disagree",5,
+                    ifelse(ke$T_B01_6=="Disagree",4,
+                           ifelse(ke$T_B01_6=="Neither agree nor disagree",3,
+                                  ifelse(ke$T_B01_6=="Agree",2,1))))
+ke$b017.num<-ifelse(ke$T_B01_7=="Completely disagree",5,
+                    ifelse(ke$T_B01_7=="Disagree",4,
+                           ifelse(ke$T_B01_7=="Neither agree nor disagree",3,
+                                  ifelse(ke$T_B01_7=="Agree",2,1))))
+ke$gen.role<-ke$b011.num+ke$b013.num+ke$b015.num+ke$b016.num+ke$b017.num
+ke$gen.rolez<-as.numeric(scale(ke$gen.role))
+
+# Barriers to HC
+ke$hc.permis<-ke$T_C32_1
+ke$hc.cost<-ke$T_C32_2
+ke$hc.dist<-ke$T_C32_3
+ke$hc.alone<-ke$T_C32_4
+ke$hc.travtime<-ke$C30
+
+ke$hc.permis.cat<-ifelse(ke$T_C32_1=="Big problem ",1,0)
+ke$hc.cost.cat<-ifelse(ke$T_C32_2=="Big problem ",1,0)
+ke$hc.dist.cat<-ifelse(ke$T_C32_3=="Big problem ",1,0)
+ke$hc.alone.cat<-ifelse(ke$T_C32_4=="Big problem ",1,0)
+ke$hc.travtime.cat<-ifelse(ke$C30=="2 to 3 hours" | ke$C30==">3 hours",1,0)
+ke$hc.travtime.cat2<-ifelse(ke$C30=="<15 minutes" | ke$C30=="16 to 30 minutes" | ke$C30=="31 to 60 minutes","<1 hour",
+                            ifelse(ke$C30=="61 to 120 minutes","1 to 2 hours",
+                                   ifelse(ke$C30=="2 to 3 hours" | ke$C30==">3 hours",">2 hours","DNK")))
+ke$hc.travtime.cat2<-factor(ke$hc.travtime.cat2, c("<1 hour", "1 to 2 hours", ">2 hours", "DNK"))
+
+
+#Index
+ke$c321.num<-ifelse(ke$T_C32_1=="Big problem ",3,
+                    ifelse(ke$T_C32_1=="Small problem",2,1))
+ke$c322.num<-ifelse(ke$T_C32_2=="Big problem ",3,
+                    ifelse(ke$T_C32_2=="Small problem",2,1))
+ke$c323.num<-ifelse(ke$T_C32_3=="Big problem ",3,
+                    ifelse(ke$T_C32_3=="Small problem",2,1))
+ke$c324.num<-ifelse(ke$T_C32_4=="Big problem ",3,
+                    ifelse(ke$T_C32_4=="Small problem",2,1))
+ke$bar.hc<-ke$c321.num+ke$c322.num+ke$c323.num+ke$c324.num
+ke$bar.hcz<-as.numeric(scale(ke$bar.hc))
+
+#Birthing norms
+#Index
+ke$brth.med<-ifelse(ke$T_B02_3=="Completely disagree",5,
+                    ifelse(ke$T_B02_3=="Disagree",4,
+                           ifelse(ke$T_B02_3=="Neither agree nor disagree",3,
+                                  ifelse(ke$T_B02_3=="Agree",2,1))))
+ke$brth.hbsafe<-ifelse(ke$T_B02_5=="Completely disagree",5,
+                    ifelse(ke$T_B02_5=="Disagree",4,
+                           ifelse(ke$T_B02_5=="Neither agree nor disagree",3,
+                                  ifelse(ke$T_B02_5=="Agree",2,1))))
+ke$brth.hosp<-ifelse(ke$T_B02_6=="Completely disagree",5,
+                    ifelse(ke$T_B02_6=="Disagree",4,
+                           ifelse(ke$T_B02_6=="Neither agree nor disagree",3,
+                                  ifelse(ke$T_B02_6=="Agree",2,1))))
+ke$brth.norm<-ke$brth.med+ke$brth.hbsafe+ke$brth.hosp
+ke$brth.normz<-as.numeric(scale(ke$brth.norm))
+
+ke$brth.hbsafe.cat<-ifelse(ke$T_B02_3=="Agree" | ke$T_B02_3=="Completely agree",1,0)
+ke$brth.hosp.cat<-ifelse(ke$T_B02_6=="Agree" | ke$T_B02_3=="Completely agree",1,0)
+
+ke$preg.know<-ifelse(ke$C14=="Yes",1,0)
+
+#High risk preg
+ke$c191.num<-ifelse(ke$T_C19_1=="Yes",1,0); ke$c191.num[is.na(ke$c191.num)] <- 0
+ke$told.brth.hosp<-ifelse(ke$T_C19_2=="Yes",1,0); ke$told.brth.hosp[is.na(ke$told.brth.hosp)] <- 0
+ke$c193.num<-ifelse(ke$T_C19_3=="Yes",1,0); ke$c193.num[is.na(ke$c193.num)] <- 0
+ke$risky.brth<-ke$c191.num+ke$told.brth.hosp+ke$c193.num
+ke$risky.brthz<-as.numeric(scale(ke$risky.brth))
+
+ke$more.anc<-ifelse(ke$T_C19_4=="Yes",1,0); ke$more.anc[is.na(ke$more.anc)] <- 0
+
+# Preferred site of birth
+ke$pref.home<-ifelse(ke$C22=="Home",1,0); ke$pref.home<-as.factor(ke$pref.home)
+ke$pref.home2<-ifelse(ke$pref.home==0, "No","Yes")
+ke$no.plan<-ifelse(ke$C22=="Not planned",1,0); ke$no.plan[is.na(ke$C22)]<-1
+
+# Trust in HC providers
+ke$trust.doc<-ifelse(ke$C33=="A lot"|ke$C33=="Moderate amount",1,0)
+ke$trust.prov<-ifelse(ke$C33=="A lot"|ke$C33=="Moderate amount"|ke$C34=="A lot"|ke$C34=="Moderate amount",1,0)
+ke$trust.chw<-ifelse(ke$C34=="A lot","Yes","No"); ke$trust.chw[is.na(ke$trust.chw)] <- "No CHW"; ke$trust.chw<-factor(ke$trust.chw, c("No","Yes","No CHW"))
+
+# Ever delivered at home
+# LinChiat's code
+C21.set = c("T_C21_700", "T_C21_701"  , "T_C21_702"  , "T_C21_703", "T_C21_704"  , "T_C21_705", 
+            "T_C21_706"  , "T_C21_707", "T_C21_708" , "T_C21_709",
+            "T_C21_800", "T_C21_801"  , "T_C21_802"  , "T_C21_803", "T_C21_804"  , "T_C21_805", 
+            "T_C21_806"  , "T_C21_807", "T_C21_808" , "T_C21_809")
+
+ke$dlvhm.ever = 0
+
+for (i in 1:20) {
+  
+  ke$dlvhm.ever[ke[,C21.set[i]] == "Home"] = 1
+  
+}
+
+describe(ke$dlvhm.ever)
+
+#My code
+ke$brth.700s<-ifelse(ke$C21_S_T_C21_700=="home                                                                                                                    "|
+                      ke$C21_S_T_C21_700=="Home                                                                                                                    "|
+                      ke$C21_S_T_C21_700=="kwa barabara                                                                                                            "|
+                      ke$C21_S_T_C21_700=="kwa nyumba                                                                                                              "|
+                      ke$C21_S_T_C21_700=="nyumba                                                                                                                  "|
+                      ke$C21_S_T_C21_700=="nyumbani                                                                                                                ",1,0)
+ke$brth.701s<-ifelse(ke$C21_S_T_C21_701=="home                                                                                                                    "|
+                      ke$C21_S_T_C21_701=="Home                                                                                                                    "|
+                      ke$C21_S_T_C21_701=="by the road side                                                                                                        "|
+                      ke$C21_S_T_C21_701=="Nyumbani                                                                                                                "|
+                      ke$C21_S_T_C21_701=="nyumbani                                                                                                                ",1,0)
+ke$brth.702s<-ifelse(ke$C21_S_T_C21_702=="home                                                                                                                    "|
+                      ke$C21_S_T_C21_702=="nyumbani                                                                                                                ",1,0)
+ke$brth.703s<-ifelse(ke$C21_S_T_C21_703=="home                                                                                                                    "|
+                      ke$C21_S_T_C21_703=="nyumbani                                                                                                                ",1,0)
+ke$brth.704s<-ifelse(ke$C21_S_T_C21_704=="home                                                                                                                    ",1,0)
+ke$brth.705s<-ifelse(ke$C21_S_T_C21_705=="home                                                                                                                    ",1,0)
+
+ke$brth.800s<-ifelse(ke$C21_S_T_C21_800=="home                                                                                                                    "|
+                      ke$C21_S_T_C21_800=="At home                                                                                                                 "|
+                      ke$C21_S_T_C21_800=="Home                                                                                                                    "|
+                      ke$C21_S_T_C21_800=="barabarani                                                                                                              "|
+                      ke$C21_S_T_C21_800=="kwa nyumbani                                                                                                            "|
+                      ke$C21_S_T_C21_800=="nyumba                                                                                                                  "|
+                      ke$C21_S_T_C21_800=="nyumbani                                                                                                                "|
+                      ke$C21_S_T_C21_800=="njiani                                                                                                                  ",1,0)
+ke$brth.801s<-ifelse(ke$C21_S_T_C21_801=="home                                                                                                                    "|
+                      ke$C21_S_T_C21_801=="At home                                                                                                                 "|
+                      ke$C21_S_T_C21_801=="Home                                                                                                                    "|
+                      ke$C21_S_T_C21_801=="nyumbani                                                                                                                ",1,0)
+ke$brth.802s<-ifelse(ke$C21_S_T_C21_802=="nyumbani                                                                                                                ",1,0)
+ke$brth.803s<-ifelse(ke$C21_S_T_C21_803=="nyumbani                                                                                                                ",1,0)
+
+ke$hb.700<-ifelse(ke$T_C21_700=="Home"|ke$T_C21_700=="On the way to the hospital"|ke$brth.700s==1,1,0); ke$hb.700[is.na(ke$hb.700)]<-0
+ke$hb.701<-ifelse(ke$T_C21_701=="Home"|ke$T_C21_701=="On the way to the hospital"|ke$brth.701s==1,1,0); ke$hb.701[is.na(ke$hb.701)]<-0
+ke$hb.702<-ifelse(ke$T_C21_702=="Home"|ke$T_C21_702=="On the way to the hospital"|ke$brth.702s==1,1,0); ke$hb.702[is.na(ke$hb.702)]<-0
+ke$hb.703<-ifelse(ke$T_C21_703=="Home"|ke$T_C21_703=="On the way to the hospital"|ke$brth.703s==1,1,0); ke$hb.703[is.na(ke$hb.703)]<-0
+ke$hb.704<-ifelse(ke$T_C21_704=="Home"|ke$T_C21_704=="On the way to the hospital"|ke$brth.704s==1,1,0); ke$hb.704[is.na(ke$hb.704)]<-0
+ke$hb.705<-ifelse(ke$T_C21_705=="Home"|ke$T_C21_705=="On the way to the hospital"|ke$brth.705s==1,1,0); ke$hb.705[is.na(ke$hb.705)]<-0
+ke$hb.706<-ifelse(ke$T_C21_706=="Home"|ke$T_C21_706=="On the way to the hospital",1,0); ke$hb.706[is.na(ke$hb.706)]<-0
+ke$hb.800<-ifelse(ke$T_C21_800=="Home"|ke$T_C21_800=="On the way to the hospital"|ke$brth.800s,1,0); ke$hb.800[is.na(ke$hb.800)]<-0
+ke$hb.801<-ifelse(ke$T_C21_801=="Home"|ke$T_C21_801=="On the way to the hospital"|ke$brth.801s,1,0); ke$hb.801[is.na(ke$hb.801)]<-0
+ke$hb.802<-ifelse(ke$T_C21_802=="Home"|ke$T_C21_802=="On the way to the hospital"|ke$brth.802s,1,0); ke$hb.802[is.na(ke$hb.802)]<-0
+ke$hb.803<-ifelse(ke$T_C21_803=="Home"|ke$T_C21_803=="On the way to the hospital"|ke$brth.803s,1,0); ke$hb.803[is.na(ke$hb.803)]<-0
+ke$hb.804<-ifelse(ke$T_C21_804=="Home"|ke$T_C21_804=="On the way to the hospital",1,0); ke$hb.804[is.na(ke$hb.804)]<-0
+ke$hb.805<-ifelse(ke$T_C21_805=="Home"|ke$T_C21_805=="On the way to the hospital",1,0); ke$hb.805[is.na(ke$hb.805)]<-0
+ke$hb.806<-ifelse(ke$T_C21_806=="Home"|ke$T_C21_806=="On the way to the hospital",1,0); ke$hb.806[is.na(ke$hb.806)]<-0
+ke$hb.807<-ifelse(ke$T_C21_807=="Home"|ke$T_C21_807=="On the way to the hospital",1,0); ke$hb.807[is.na(ke$hb.807)]<-0
+ke$hb.808<-ifelse(ke$T_C21_808=="Home"|ke$T_C21_808=="On the way to the hospital",1,0); ke$hb.808[is.na(ke$hb.808)]<-0
+
+ke$hb.ever<-ifelse(ke$hb.700==1|ke$hb.701==1|ke$hb.702==1|ke$hb.703==1|ke$hb.704==1|ke$hb.705==1|ke$hb.706==1|
+                     ke$hb.800==1|ke$hb.801==1|ke$hb.802==1|ke$hb.803==1|ke$hb.804==1|ke$hb.805==1|ke$hb.806==1|ke$hb.807==1|ke$hb.808==1,1,0)
+ke$hb.ever[is.na(ke$hb.ever)]<-0
+
+# Location of delivery of youngest child:
+# AGE OF CHILDREN
+age.set = c("T_S03a_700", "T_S03a_701", "T_S03a_702", "T_S03a_703", "T_S03a_704", "T_S03a_705", "T_S03a_706", "T_S03a_707", "T_S03a_708",
+            "T_S03a_800", "T_S03a_801", "T_S03a_802", "T_S03a_803", "T_S03a_804", "T_S03a_805", "T_S03a_806", "T_S03a_807", "T_S03a_808")
+
+tdat = ke[c("SbjNum", age.set, C21.set)]
+
+# find age of children columns
+names(tdat)
+
+age.mat = tdat [2:19]
+loc.mat = tdat [20:37]
+
+# recode missing to 999 to match 
+age.mat[is.na(age.mat)] = 999 
+
+# find column with youngest child
+id.kid = apply(age.mat, MARGIN = 1, FUN = which.min)
+# create location of birth of youngest child:
+tdat$C21.youngest.child = 99
+tdat$C21.youngest.child = loc.mat[cbind(1:nrow(loc.mat), id.kid)]
+
+ke$dlvhm.young = tdat$C21.youngest.child
+
+# Birth outcomes
+ke$child.death<-ifelse(ke$C13a=="Yes",1,0)
+ke$still.mis<-ifelse(ke$T_C13_2_recode_new==1|ke$T_C13_4_recode_new==1,1,0)
+ke$abort<-ifelse(ke$T_C13_3_recode_new==1,1,0)
+ke$live.brth<-ke$T_C13_1; ke$live.brth[is.na(ke$live.brth)]<-0
+ke$onechild<-ifelse(ke$live.brth==1,0,1)
+
+#Age at major events
+ke$age.cohab<-ke$I_1_C13m_recode
+ke$age.1stbrth<-ke$I_5_C13m_recode
+ke$age.1stpreg<-ke$I_4_C13m_recode
+
+ke<- ke %>% mutate(age.cohab.cat = case_when(
+  is.na(I_1_C13m_recode) ~ "Never",
+  (I_1_C13m_recode > 0 & I_1_C13m_recode < 15) ~ "5-14",
+  (I_1_C13m_recode >= 15 & I_1_C13m_recode < 20) ~ "15-19",
+  (I_1_C13m_recode >= 20) ~ "20+"))
+ke$age.cohab.cat<-factor(ke$age.cohab.cat, c("5-14", "15-19", "20+","Never"))
+
+ke<- ke %>% mutate(age.1stbrth.cat = case_when(
+  (I_5_C13m_recode > 0 & I_5_C13m_recode < 15) ~ "5-14",
+  (I_5_C13m_recode >= 15 & I_5_C13m_recode < 20) ~ "15-19",
+  (I_5_C13m_recode >= 20 & I_5_C13m_recode < 50) ~ "20+"))
+ke$age.1stbrth.cat[is.na(ke$age.1stbrth.cat)]<-"DNK"
+ke$age.1stbrth.cat<-factor(ke$age.1stbrth.cat, c("5-14", "15-19", "20+", "DNK"))
+
+ke<- ke %>% mutate(age.1stbrth.cat2 = case_when(
+  (I_5_C13m_recode > 0 & I_5_C13m_recode < 15) ~ "5-14",
+  (I_5_C13m_recode >= 15 & I_5_C13m_recode < 25) ~ "15-24",
+  (I_5_C13m_recode >= 25 & I_5_C13m_recode < 50) ~ "25+"))
+ke$age.1stbrth.cat2[is.na(ke$age.1stbrth.cat2)]<-"DNK"
+ke$age.1stbrth.cat2<-factor(ke$age.1stbrth.cat2, c("5-14", "15-24", "25+", "DNK"))
+
+ke$age.bin.1brth<-ifelse(ke$I_5_C13m <15, "LT 15",
+                         ifelse(ke$I_5_C13m >= 15 & ke$I_5_C13m <20, "15-19",
+                                ifelse(ke$I_5_C13m >= 20 & ke$I_5_C13m <25, "20-24",
+                                       ifelse(ke$I_5_C13m >= 25 & ke$I_5_C13m <30,"25-29",
+                                              ifelse(ke$I_5_C13m >= 30 & ke$I_5_C13m <50,"30+", "DNK")))))
+ke$age.bin.1brth<-factor(ke$age.bin.1brth, c("20-24", "LT 15", "15-19", "25-29", "30+", "DNK"))
+
+ke<- ke %>% mutate(age.1stpreg.cat = case_when(
+  (I_4_C13m_recode > 0 & I_4_C13m_recode < 15) ~ "5-14",
+  (I_4_C13m_recode >= 15 & I_4_C13m_recode < 20) ~ "15-19",
+  (I_4_C13m_recode >= 20 & I_4_C13m_recode < 50) ~ "20+"))
+
+#Marital status
+ke$mc1<-ifelse(ke$S03_O1=="Husband"|ke$S03_O1=="Partner or boyfriend",1,0)
+ke$mc2<-ifelse(ke$A01=="Yes -  currently married"|ke$A01=="Yes - have a boyfriend or partner",1,0)
+ke$marrcohab<-ifelse(ke$mc1==1|ke$mc2==1,1,0)
+
+#Education
+ke$wom.ed.cat<-ke$E07a
+ke$wom.ed.cat<-ifelse(ke$wom.ed.cat=="No school",2,ke$wom.ed.cat); ke$wom.ed.cat<-as.factor(ke$wom.ed.cat)
+ke$wom.ed.cat2<-ifelse((ke$E07a=="No school" | ke$E07a=="Primary"),"Low","High"); ke$wom.ed.cat2<-factor(ke$wom.ed.cat2, c("Low","High"))
+ke$wom.ed.yrs<-ke$E07b; ke$wom.ed.yrs[is.na(ke$wom.ed.yrs)]<-0
+ke$part.ed.cat<-ke$E07c
+
+# ANC
+ke$anc.visit<-ke$C17
+ke$anc.visit.cat<-ifelse(ke$C17=="0 ","None",
+                         ifelse(ke$C17=="1" |ke$C17=="2" |ke$C17=="3","1 to 3",
+                                ifelse(ke$C17=="4 or more","4 or more","DNK")))
+ke$anc.visit.cat <- factor(ke$anc.visit.cat, c("None","1 to 3","4 or more","DNK"))
+
+ke$anc.month<-ifelse(ke$C18_recode<4,"Month 1-3",
+                     ifelse(ke$C18_recode>3 & ke$C18_recode<7,"Month 4-6",
+                            ifelse(ke$C18_recode>6 & ke$C18_recode<10,"Month 7-9",
+                                   ifelse(ke$C18_recode==99, "Never","DNK"))))
+ke$anc.month <- factor(ke$anc.month, c("Month 1-3","Month 4-6","Month 7-9","Never","DNK"))
+
+ke$anc.4plus<-ifelse(ke$C17=="4 or more",1,0)
+ke$anyanc<-ifelse(ke$C17=="0 ","No","Yes")
+ke$anc.1sttri<-ifelse(ke$anc.month=="Month 1-3", "Yes",
+                      ifelse(ke$anc.month=="DNK", "DNK","No"))
+ke$anc.1sttri<-factor(ke$anc.1sttri, c("No","Yes","DNK"))
+
+#Media 
+ke$media.all<-ke$T_E34_1_recode+ke$T_E34_2_recode+ke$T_E34_3_recode+ke$T_E34_4_recode
+ke$media.allz<-as.numeric(scale(ke$media.all))
+
+#Community Trust - higher number=more trust
+ke$a101.num<-ifelse(ke$T_A10_1=="Never",1,
+                    ifelse(ke$T_A10_1=="Rarely",2,
+                           ifelse(ke$T_A10_1=="Half the time",3,
+                                  ifelse(ke$T_A10_1=="Most of the time",4,5))))
+ke$a102.num<-ifelse(ke$T_A10_2=="Never",1,
+                    ifelse(ke$T_A10_2=="Rarely",2,
+                           ifelse(ke$T_A10_2=="Half the time",3,
+                                  ifelse(ke$T_A10_2=="Most of the time",4,5))))
+ke$a103.num<-ifelse(ke$T_A10_3=="Never",5,
+                    ifelse(ke$T_A10_3=="Rarely",4,
+                           ifelse(ke$T_A10_3=="Half the time",3,
+                                  ifelse(ke$T_A10_3=="Most of the time",2,1))))
+ke$a104.num<-ifelse(ke$T_A10_4=="Never",5,
+                    ifelse(ke$T_A10_4=="Rarely",4,
+                           ifelse(ke$T_A10_4=="Half the time",3,
+                                  ifelse(ke$T_A10_4=="Most of the time",2,1))))
+ke$a105.num<-ifelse(ke$T_A10_5=="Never",5,
+                    ifelse(ke$T_A10_5=="Rarely",4,
+                           ifelse(ke$T_A10_5=="Half the time",3,
+                                  ifelse(ke$T_A10_5=="Most of the time",2,1))))
+ke$comm.trust<-ke$a101.num+ke$a102.num+ke$a103.num+ke$a104.num+ke$a105.num
+ke$comm.trustz<-as.numeric(scale(ke$comm.trust))
+
+#Partner trust- higher number=more trust
+ke$a91.num<-ifelse(ke$T_A09_1_1=="Never",1,
+                    ifelse(ke$T_A09_1_1=="Rarely",2,
+                           ifelse(ke$T_A09_1_1=="Half the time",3,
+                                  ifelse(ke$T_A09_1_1=="Most of the time",4,5))))
+ke$a92.num<-ifelse(ke$T_A09_1_2=="Never",1,
+                    ifelse(ke$T_A09_1_2=="Rarely",2,
+                           ifelse(ke$T_A09_1_2=="Half the time",3,
+                                  ifelse(ke$T_A09_1_2=="Most of the time",4,5))))
+ke$a93.num<-ifelse(ke$T_A09_1_3=="Never",5,
+                    ifelse(ke$T_A09_1_3=="Rarely",4,
+                           ifelse(ke$T_A09_1_3=="Half the time",3,
+                                  ifelse(ke$T_A09_1_3=="Most of the time",2,1))))
+ke$a94.num<-ifelse(ke$T_A09_1_4=="Never",5,
+                    ifelse(ke$T_A09_1_4=="Rarely",4,
+                           ifelse(ke$T_A09_1_4=="Half the time",3,
+                                  ifelse(ke$T_A09_1_4=="Most of the time",2,1))))
+ke$a95.num<-ifelse(ke$T_A09_1_5=="Never",1,
+                    ifelse(ke$T_A09_1_5=="Rarely",2,
+                           ifelse(ke$T_A09_1_5=="Half the time",3,
+                                  ifelse(ke$T_A09_1_5=="Most of the time",4,5))))
+ke$a96.num<-ifelse(ke$T_A09_1_6=="Never",5,
+                   ifelse(ke$T_A09_1_6=="Rarely",4,
+                          ifelse(ke$T_A09_1_6=="Half the time",3,
+                                 ifelse(ke$T_A09_1_6=="Most of the time",2,1))))
+ke$a97.num<-ifelse(ke$T_A09_1_7=="Never",5,
+                   ifelse(ke$T_A09_1_7=="Rarely",4,
+                          ifelse(ke$T_A09_1_7=="Half the time",3,
+                                 ifelse(ke$T_A09_1_7=="Most of the time",2,1))))
+ke$a98.num<-ifelse(ke$T_A09_1_8=="Never",1,
+                   ifelse(ke$T_A09_1_8=="Rarely",2,
+                          ifelse(ke$T_A09_1_8=="Half the time",3,
+                                 ifelse(ke$T_A09_1_8=="Most of the time",4,5))))
+ke$a99.num<-ifelse(ke$T_A09_1_9=="Never",1,
+                   ifelse(ke$T_A09_1_9=="Rarely",2,
+                          ifelse(ke$T_A09_1_9=="Half the time",3,
+                                 ifelse(ke$T_A09_1_9=="Most of the time",4,5))))
+ke$a910.num<-ifelse(ke$T_A09_1_10=="Never",5,
+                   ifelse(ke$T_A09_1_10=="Rarely",4,
+                          ifelse(ke$T_A09_1_10=="Half the time",3,
+                                 ifelse(ke$T_A09_1_10=="Most of the time",2,1))))
+ke$part.trust<-ke$a91.num+ke$a92.num+ke$a93.num+ke$a94.num+ke$a95.num+ke$a96.num+ke$a97.num+ke$a98.num+ke$a99.num+ke$a910.num
+ke$part.trustz<-as.numeric(scale(ke$part.trust))
+
+ke$wom.dec.hlth<-ifelse(ke$A03a_O1=="Self",1,0); ke$wom.dec.hlth[is.na(ke$wom.dec.hlth)]<-0
+ke$wom.dec.big<-ifelse(ke$A03b=="Self",1,0)
+
+ke$part.in.hh<-ifelse(ke$Partner_in_HH=="Partner in HH",1,0); ke$part.in.hh[is.na(ke$part.in.hh)]<-0
+
+# Larger social support
+ke$supp.out.hh<-ifelse(ke$A04a_O1=="Friend"|ke$A04a_O1=="Relative"|ke$A04a_O2=="Relative",1,0); ke$supp.out.hh[is.na(ke$supp.out.hh)]<-0
+
+# Religion
+ke$muslim<-ifelse(ke$E39_O1=="Muslim",1,0)
+
+# Domestic violence = higher=less acceptable
+ke$a131.num<-ifelse(ke$T_A13_1=="No",3,
+                    ifelse(ke$T_A13_1=="Don't know",2,1))
+ke$a132.num<-ifelse(ke$T_A13_2=="No",3,
+                    ifelse(ke$T_A13_2=="Don't know",2,1))
+ke$a133.num<-ifelse(ke$T_A13_3=="No",3,
+                    ifelse(ke$T_A13_3=="Don't know",2,1))
+ke$a134.num<-ifelse(ke$T_A13_4=="No",3,
+                    ifelse(ke$T_A13_4=="Don't know",2,1))
+ke$dv.notok<-ke$a131.num+ke$a132.num+ke$a133.num+ke$a134.num
+ke$dv.notokz<-as.numeric(scale(ke$dv.notok))
+
+#Contraception
+ke$C371<-ifelse(ke$C37_O1=="None of the above"|ke$C37_O1=="Standard days/Rhythm method"|ke$C37_O1=="Lactational amenorrhoea method"|ke$C37_O1=="Withdrawal method"|ke$C37_O1=="Other method, specify:",0,1)
+ke$c372<-ifelse(ke$C37_O2=="None of the above"|ke$C37_O2=="Standard days/Rhythm method"|ke$C37_O2=="Lactational amenorrhoea method"|ke$C37_O2=="Withdrawal method"|ke$C37_O2=="Other method, specify:",0,1)
+ke$c373<-ifelse(ke$C37_O3=="None of the above"|ke$C37_O3=="Standard days/Rhythm method"|ke$C37_O3=="Lactational amenorrhoea method"|ke$C37_O3=="Withdrawal method"|ke$C37_O3=="Other method, specify:",0,1)
+ke$c374<-ifelse(ke$C37_O4=="None of the above"|ke$C37_O4=="Standard days/Rhythm method"|ke$C37_O4=="Lactational amenorrhoea method"|ke$C37_O4=="Withdrawal method"|ke$C37_O4=="Other method, specify:",0,1)
+ke$c375<-ifelse(ke$C37_O5=="None of the above"|ke$C37_O5=="Standard days/Rhythm method"|ke$C37_O5=="Lactational amenorrhoea method"|ke$C37_O5=="Withdrawal method"|ke$C37_O5=="Other method, specify:",0,1)
+ke$c376<-ifelse(ke$C37_O6=="None of the above"|ke$C37_O6=="Standard days/Rhythm method"|ke$C37_O6=="Lactational amenorrhoea method"|ke$C37_O6=="Withdrawal method"|ke$C37_O6=="Other method, specify:",0,1)
+ke$c377<-ifelse(ke$C37_O7=="None of the above"|ke$C37_O7=="Standard days/Rhythm method"|ke$C37_O7=="Lactational amenorrhoea method"|ke$C37_O7=="Withdrawal method"|ke$C37_O7=="Other method, specify:",0,1)
+ke$fp.use.ever<-ifelse(ke$C371==1|ke$c372==1|ke$c373==1|ke$c374==1|ke$c375==1|ke$c376==1|ke$c377==1,1,0); ke$fp.use.ever[is.na(ke$fp.use.ever)]<-0
+
+#Contraception use now
+#Contraception
+ke$C361<-ifelse(ke$C36_O1=="No method"|ke$C36_O1=="Standard days/Rhythm method"|ke$C36_O1=="Lactational amenorrhoea method"|ke$C36_O1=="Withdrawal method"|ke$C36_O1=="Other method, specify:",0,1)
+ke$C362<-ifelse(ke$C36_O2=="No method"|ke$C36_O2=="Standard days/Rhythm method"|ke$C36_O2=="Lactational amenorrhoea method"|ke$C36_O2=="Withdrawal method"|ke$C36_O2=="Other method, specify:",0,1)
+ke$C363<-ifelse(ke$C36_O3=="No method"|ke$C36_O3=="Standard days/Rhythm method"|ke$C36_O3=="Lactational amenorrhoea method"|ke$C36_O3=="Withdrawal method"|ke$C36_O3=="Other method, specify:",0,1)
+ke$C364<-ifelse(ke$C36_O4=="No method"|ke$C36_O4=="Standard days/Rhythm method"|ke$C36_O4=="Lactational amenorrhoea method"|ke$C36_O4=="Withdrawal method"|ke$C36_O4=="Other method, specify:",0,1)
+ke$C365<-ifelse(ke$C36_O5=="No method"|ke$C36_O5=="Standard days/Rhythm method"|ke$C36_O5=="Lactational amenorrhoea method"|ke$C36_O5=="Withdrawal method"|ke$C36_O5=="Other method, specify:",0,1)
+ke$C366<-ifelse(ke$C36_O6=="No method"|ke$C36_O6=="Standard days/Rhythm method"|ke$C36_O6=="Lactational amenorrhoea method"|ke$C36_O6=="Withdrawal method"|ke$C36_O6=="Other method, specify:",0,1)
+ke$fp.use.now<-ifelse(ke$C361==1|ke$C362==1|ke$C363==1|ke$C364==1|ke$C365==1|ke$C366==1,"Yes","No")
+ke$fp.use.now<-ifelse(ke$C35=="Currently pregnant", "Currently Pregnant",ke$fp.use.now)
+ke$fp.use.now[is.na(ke$fp.use.now)]<-"No"
+ke$fp.use.now2<-ifelse(ke$fp.use.now=="Yes",1,0)
+
+#Avoid pregnancy
+ke$avoid.preg<-ifelse(ke$C35=="Yes",1,0); ke$avoid.preg[is.na(ke$avoid.preg)]<-0
+
+#Use formal HC
+ke$c281<-ifelse(ke$C28_01_recode=="Private doctor",1,0)
+ke$c282<-ifelse(ke$C28_02_recode=="Government Hosptial",1,0)
+ke$use.hc.sick<-ifelse(ke$c281==1|ke$c282==1,1,0); ke$use.hc.sick[is.na(ke$use.hc.sick)]<-0
+
+#bio parents
+ke$lived.bio.par<-ifelse(ke$E01_REOCDE=="Someone else (NOT Bio Parent)",0,1)
+ke$feel.safe<-ifelse(ke$E04=="Always"|ke$E04=="Most of the time",1,0)
+
+# Economics
+ke$wom.savgrp<-ifelse(ke$E28=="Yes",1,0); ke$wom.savgrp[is.na(ke$wom.savgrp)]<-0
+ke$hh.trans<-ifelse(ke$T_E35_2=="Yes"|ke$T_E35_3=="Yes"|ke$T_E35_4=="Yes",1,0)
+ke$wom.work<-ifelse(ke$E08_O1=="Self",1,0)
+ke$rural<-ifelse(ke$URBAN_RURA=="R  ",1,0)
+
+# Digital
+ke$hh.phone<-ifelse(ke$IO19=="No one in household",0,1)
+ke <- ke %>% mutate(hh.phonetype = case_when(
+  IO20_IO19_recode=="Smart phone" ~ "Smartphone",
+  IO20_IO19_recode=="Cell only" ~ "Mobile only",
+  IO20_IO19_recode=="Don't know" | IO20_IO19_recode=="No phone" ~ "No phone"))
+ke$wom.phone<-ifelse(ke$IO19=="Owns cell phone alone "|ke$IO19=="Owns both shared and personal cell phones",1,0)
+ke<- ke %>% mutate(wom.phonetype = case_when(
+  wom.phone==1 & IO20=="Smartphone" ~ "Smartphone",
+  wom.phone==1 & IO20=="Cellular phone only" ~ "Mobile only",
+  wom.phone==0 | (wom.phone==1 & IO20=="Don't know")~ "No phone"))
+
+ke$hh.bank.acct<-ifelse(ke$E25=="No one in household has bank account" | ke$E25=="Don't know",0,1)
+ke$wom.bank.acct<-ifelse(ke$E25=="Has own bank account alone " | ke$E25=="Has both joint and separate accounts",1,0)
+
+ke$hh.mobbank<-ifelse(ke$E25a=="No one in household has account" | ke$E25a=="Don't know",0,1)
+ke$wom.mobbank<-ifelse(ke$E25a=="Has own account" | ke$E25a=="Has both joint and separate accounts",1,0)
+
+ke$use.internet<-ifelse(ke$T_E34_1=="Not at all",0,1)
+ke$use.internet.freq<-ke$T_E34_1
+
+#Wealth index
+ke$land<-ifelse(ke$E21=="No one in household",0,1)
+ke$elec<-ifelse(ke$E23=="Yes",1,0)
+ke$bike<-ifelse(ke$T_E35_1=="Yes",1,0)
+ke$scoot<-ifelse(ke$T_E35_2=="Yes",1,0)
+ke$car<-ifelse(ke$T_E35_3=="Yes",1,0)
+ke$boat<-ifelse(ke$T_E35_4=="Yes",1,0)
+ke$rooms<-ifelse(ke$IO16=="1 room",1,
+                 ifelse(ke$IO16=="2 rooms",2,
+                        ifelse(ke$IO16=="3 rooms",3,
+                               ifelse(ke$IO16=="4 rooms",4,5))))
+ke$flusht<-ifelse(ke$IO21=="Flush toilet",1,0)
+ke$pittoi<-ifelse(ke$IO21=="Pit latrine",1,0)
+ke$notoi<-ifelse(ke$IO21=="No facility/bush/field",1,0)
+ke$bucktoi<-ifelse(ke$IO21=="Bucket in house",1,0)
+ke$toishare<-ifelse(ke$IO22=="Yes",1,0); ke$toishare[is.na(ke$toishare)]<-0
+ke$watpipe<-ifelse(ke$IO26=="Yes, piped water available",1,0)
+ke$roofno<-ifelse(ke$IO5=="No roof",1,0)
+ke$roofnat<-ifelse(ke$IO5=="Thatch/palm leaf"|ke$IO5=="Sod"|ke$IO5=="Other, specify:",1,0)
+ke$roofrud<-ifelse(ke$IO5=="Rustic mat"|ke$IO5=="Palm/bamboo"|ke$IO5=="Wood planks"|ke$IO5=="Cardboard",1,0)
+ke$rooffin<-ifelse(ke$IO5=="Metal / iron sheets"|ke$IO5=="Wood"|ke$IO5=="Calamine/cement fiber"|ke$IO5=="Ceramic tiles"|ke$IO5=="Cement"|ke$IO5=="Roofing shingles",1,0)
+ke$wallno<-ifelse(ke$IO6=="No walls",1,0)
+ke$wallnat<-ifelse(ke$IO6=="Cane/Palm/Trunks"|ke$IO6=="Dirt / mud"|ke$IO6=="Other, specify:",1,0)
+ke$wallrud<-ifelse(ke$IO6=="Bamboo with mud"|ke$IO6=="Stone with mud"|ke$IO6=="Uncovered adobe"|ke$IO6=="Plywood"|ke$IO6=="Cardboard"|ke$IO6=="Reused wood",1,0)
+ke$wallfin<-ifelse(ke$IO6=="Cement"|ke$IO6=="Stone with lime/cement"|ke$IO6=="Bricks"|ke$IO6=="Cement blocks"|ke$IO6=="Covered adobe"|ke$IO6=="Wood plank/shingles"|ke$IO6=="Metal/ iron sheets",1,0)
+ke$sewerno<-ifelse(ke$IO9=="No drainage",1,0)
+ke$seweropu<-ifelse(ke$IO9=="Open, but uncemented",1,0)
+ke$seweropc<-ifelse(ke$IO9=="Open, but cemented",1,0)
+ke$sewercl<-ifelse(ke$IO9=="Closed sewer",1,0)
+ke$ownhome<-ifelse(ke$E16=="Own home",1,0)
+ke$hungry<-ifelse(ke$T_A11_1=="Yes",1,0)
+ke$reloc<-ifelse(ke$T_A11_3=="Yes",1,0)
+ke$kidwrk<-ifelse(ke$T_A11_5=="Yes",1,0)
+
+wealth<-ke %>% select(c("land","elec","hh.phone","bike","scoot","car","boat","rooms","flusht","pittoi","notoi","bucktoi","toishare","watpipe","roofno","roofnat","roofrud","rooffin",
+                        "wallno","wallnat","wallrud","wallfin","sewerno","seweropu","seweropc","sewercl","ownhome","hungry","reloc","kidwrk"))
+
+prn<-principal(wealth, rotate="varimax", nfactors=5,covar=T, scores=TRUE)
+ke$wealth.index<-prn$scores[,1]
+nlab<-c(1,2,3,4,5)
+ke<-mutate(ke,wealth.quint=as.factor(cut(ke$wealth.index,breaks=5,labels=nlab)))
+
+
+# Create clean dataset
+kenya <- ke %>% select(c("HHIDclean","PSUclean","caseid", "urfm.seg","base.wt", "dlvhm.ever","hb.ever","dlvhm.young","gen.role","gen.rolez", "hc.permis","hc.cost","hc.dist","hc.alone","hc.travtime","bar.hc",
+                         "bar.hcz","brth.hbsafe","brth.norm","brth.normz","told.brth.hosp","hc.travtime.cat", "part.in.hh", "fp.use.now2", "age.bin.1brth", "age.1stbrth.cat2",
+                         "risky.brth","risky.brthz","more.anc","pref.home","no.plan", "trust.doc","trust.prov","child.death","still.mis","abort","live.brth","preg.know","num.hh.members",
+                         "num.females.15up","Total_sons_daughters","TotalchildrenU5","age.cohab","age.1stbrth","age.1stpreg","age.cohab.cat","age.1stbrth.cat","age.1stpreg.cat","wom.ed.cat","wom.ed.yrs",
+                         "part.ed.cat","marrcohab","age.resp","anc.visit","anc.month","anc.4plus", "media.allz", "supp.out.hh", "avoid.preg", "fp.use.now", "use.hc.sick", "pref.home2",
+                         "comm.trust","comm.trustz","part.trust","part.trustz","Partner_in_HH","Preg_Rejection_Partner","wom.dec.hlth","wom.dec.big","muslim","dv.notok","dv.notokz","wom.work",
+                         "hh.bank.acct","hh.phone","wom.phone","wom.savgrp","hh.trans","hc.travtime","rural","feel.safe","lived.bio.par","fp.use.ever","wealth.index","wealth.quint",
+                         "hc.cost.cat","hc.alone.cat","hc.permis.cat","hc.dist.cat","anc.visit.cat","onechild","num.hh.females","trust.chw","anyanc",
+                         "brth.hbsafe.cat","brth.hosp.cat","anc.1sttri", "wom.ed.cat2","hc.travtime.cat2", "hh.phonetype","wom.phonetype",
+                         "wom.bank.acct", "hh.mobbank","wom.mobbank","use.internet","use.internet.freq"))
+
+kenya<-merge(kenya, new.seg, by.x="urfm.seg", by.y="urfm.seg",all.x=T)
+
+######################## plotting 
+Pathdesign<-svydesign(id=kenya$caseid, strata=kenya$PSUclean, weights=kenya$base.wt, data=kenya)
+tot <- melt(svytable(~new.seg, Pathdesign))
+hb <- melt(svytable(~dlvhm.ever, Pathdesign))
+
+tot <-data.table(tot) 
+setkey(tot,value)
+
+####### 
+hbseg <- melt(svytable(~new.seg+dlvhm.ever, Pathdesign))
+perc <- merge(hbseg,tot,by="new.seg")
+perc$perct <- 100*perc$value.x/perc$value.y
+#perc <- perc[perc$value.y>=50,]
+
+theme_set(theme_bw(30))
+ggplot(aes(x=new.seg),data=perc)+  geom_col(aes(y=perct, fill=as.factor(dlvhm.ever))) + theme(plot.title = element_text(hjust = 0.5))+
+  xlab("Segments")+ ylab("% of Women in each Segment") +ggtitle("") + 
+  guides(fill=guide_legend(title="Home Birth"))+ scale_fill_manual(values=c("grey", "darkcyan"), labels=c("No", "Yes"))
+
+## Ladder plot
+svytotal(~new.seg, Pathdesign)
+svyciprop(~dlvhm.ever, Pathdesign, na.rm=T)
+
+hb<-svyby(~dlvhm.ever, ~new.seg, Pathdesign, svymean,ci=TRUE,vartype="ci"); as.data.frame(hb)
+hb$dlvhm.ever<-hb$dlvhm.ever*100
+hb$ci_l<-hb$ci_l*100
+hb$ci_u<-hb$ci_u*100
+
+ggplot(hb) + 
+  geom_col(aes(x=reorder(new.seg, desc(new.seg)), y=dlvhm.ever), alpha=0.9, size=5, fill="darkcyan", show.legend = FALSE) +
+  geom_errorbar(aes(x=reorder(new.seg, desc(new.seg)), y=dlvhm.ever, ymin=ci_l, ymax=ci_u), size=1, width=.5, show.legend = FALSE) +
+  geom_text(aes(y=dlvhm.ever, x=new.seg, label=round(dlvhm.ever,1)), vjust=-1, hjust=.5)+
+  coord_flip()+
+  xlab("") +
+  scale_y_continuous(name = "Percent of Births at Home", breaks=seq(0, 100, 10)) +
+  theme(axis.text.y = element_text(size = 12), axis.text.x = element_text(size = 14), axis.title=element_text(size=14))
+
+#Ladder plot 2
+svy.glm<-svyglm(dlvhm.ever~new.seg,family=quasibinomial,design=Pathdesign, data=kenya)
+
+pred.data<-data.frame("new.seg"=new.seg$new.seg)
+pred.data3<-data.frame(type=c("RF" ,"RF", "RM" ,"RM" ,"RM" , "UF" ,"UF", "UM" ,"UM"))
+
+# Plot extended segments
+probabilities <- predict(svy.glm, pred.data, type = "response", se.fit=T)
+prob1<-as.data.frame(probabilities)
+prob1$lower<- prob1$response - (1.96*prob1$SE)
+prob1$upper<- prob1$response + (1.96*prob1$SE)
+prob1$segX4<- pred.data$new.seg
+prob1$type<-pred.data3$type
+
+cbPalette <- c("#A6611A", "#DFC27D", "#80CDC1", "#018571")
+ggplot(prob1, aes(x=reorder(segX4, desc(segX4)), y=response)) + 
+  geom_point(aes(colour=type), alpha=0.9, size=5, show.legend = FALSE) +
+  geom_errorbar(aes(ymin=lower, ymax=upper, color=type), size=1, width=.5, show.legend = FALSE) +
+  geom_text(aes(y=response, x=segX4, label=round(response,2)), vjust=-1.2, hjust=.5) +
+  coord_flip()+
+  xlab("") +
+  ylab("Probability of Home Birth") +
+  scale_colour_manual(values=cbPalette) +
+  theme(axis.text.y = element_text(size = 12), axis.text.x = element_text(size = 14), axis.title=element_text(size=14))
+
+
+# Digital
+"hh.bank.acct","hh.phone","wom.phone","hh.phonetype","wom.phonetype",
+"wom.bank.acct", "hh.mobbank","wom.mobbank","use.internet","use.internet.freq"
+
+"RF2","RF4","RM3","RM2","RM4","UF2","UF4","UM1","UM4"
+clust="RM3"
+
+pop.by.cluster <- as.data.frame(prop.table(svytable(~new.seg, Pathdesign)))
+  
+svyquantile(~age.resp,  subset(Pathdesign, new.seg == clust), quantiles = c(0.25, 0.5, 0.75))
+
+data.frame(svytable(~hh.bank.acct + new.seg, Pathdesign)) %>%  
+  group_by(new.seg) %>%
+  mutate(percent = round(Freq/sum(Freq)*100,2)) %>% 
+#  filter(Freq>0) %>%
+  print(n=Inf)
+
+data.frame(svytable(~wom.bank.acct + new.seg, Pathdesign)) %>%  
+  group_by(new.seg) %>%
+  mutate(percent = round(Freq/sum(Freq)*100,2)) %>% 
+#  filter(Freq>0) %>%
+  print(n=Inf)
+
+## Digital connectivity
+
+data.frame(svytable(~hh.phone + new.seg, Pathdesign)) %>%  
+  group_by(new.seg) %>%
+  mutate(percent = round(Freq/sum(Freq)*100,2)) %>% 
+  filter(Freq>0) %>%
+  print(n=Inf)
+
+data.frame(svytable(~wom.phone + new.seg, Pathdesign)) %>%  
+  group_by(new.seg) %>%
+  mutate(percent = round(Freq/sum(Freq)*100,2)) %>% 
+#  filter(Freq>0) %>%
+  print(n=Inf)
+
+data.frame(svytable(~hh.phonetype + new.seg, Pathdesign)) %>%  
+  group_by(new.seg) %>%
+  mutate(percent = round(Freq/sum(Freq)*100,2)) %>% 
+#  filter(Freq>0) %>%
+  print(n=Inf)
+
+data.frame(svytable(~wom.phonetype + new.seg, Pathdesign)) %>%  
+  group_by(new.seg) %>%
+  mutate(percent = round(Freq/sum(Freq)*100,2)) %>% 
+#  filter(Freq>0) %>%
+  print(n=Inf)
+
+data.frame(svytable(~hh.mobbank + new.seg, Pathdesign)) %>%  
+  group_by(new.seg) %>%
+  mutate(percent = round(Freq/sum(Freq)*100,2)) %>% 
+  filter(Freq>0) %>%
+  print(n=Inf)
+
+data.frame(svytable(~wom.mobbank + new.seg, Pathdesign)) %>%  
+  group_by(new.seg) %>%
+  mutate(percent = round(Freq/sum(Freq)*100,2)) %>% 
+  filter(Freq>0) %>%
+  print(n=Inf)
+
+data.frame(svytable(~use.internet + new.seg, Pathdesign)) %>%  
+  group_by(new.seg) %>%
+  mutate(percent = round(Freq/sum(Freq)*100,2)) %>% 
+  filter(Freq>0) %>%
+  print(n=Inf)
+
+data.frame(svytable(~use.internet.freq + new.seg, Pathdesign)) %>%  
+  group_by(new.seg) %>%
+  mutate(percent = round(Freq/sum(Freq)*100,2)) %>% 
+#  filter(Freq>0) %>%
+  print(n=Inf)

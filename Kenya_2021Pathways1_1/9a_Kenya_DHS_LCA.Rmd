@@ -1,0 +1,877 @@
+---
+title: "9_Kenya_DHS_LCA"
+author: "UW START"
+date: "2024-1-18"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '6'
+  word_document:
+    toc: yes
+    toc_depth: '6'
+  pdf_document:
+    toc: yes
+    toc_depth: '6'
+---
+
+<style type="text/css">
+
+h1.title {
+  font-size: 21px;
+  color: Blue;
+  text-align: center;
+}
+h4.author { /* Header 4 - and the author and data headers use this too  */
+    font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+h4.date { /* Header 4 - and the author and data headers use this too  */
+  font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+</style>
+
+</br>
+
+
+***
+---
+
+Notes on version changes: 10/7/2024 Darcy changed to subset on kids.under5 (biological children under 5) instead of num.under5 (kids under 5 living in the house).
+
+## 1. Data Preparation 
+
+
+### 1.1 Setting up the environment and filepath
+
+```{r setup, include=T}
+rm(list=ls())
+
+pacman::p_load("fastDummies", "poLCA", "tidyverse","openxlsx","ggplot2","ggalluvial","ggrepel","gridExtra","cowplot","survey","dplyr","scales","RColorBrewer", "data.table", "ggpubr", "networkD3", "knitr", "statip", "stringr", "finalfit")
+
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+options(scipen = 100, digits = 4)
+
+user = "Darcy"
+
+
+if (tolower(user) == "helena") {
+  rootdir <- "C:/Users/hmang/UW START Dropbox/Helena Manguerra/"
+} else if (tolower(user) == "mac") {
+  rootdir <- "~/UW START Dropbox/Helena Manguerra/"
+} else if (tolower(user) == "pc") {
+  rootdir <- "C:/Users/theja/UW START Dropbox/Helena Manguerra/"
+} else if (tolower(user) == "amanda") {
+  rootdir <- "C:/Users/manda/UW START Dropbox/Amanda Brumwell/"
+} else if (tolower(user) == "andrea") {
+  rootdir <- "C:/Users/Andrea Rivas/UW START Dropbox/Andrea Rivas/"
+} else if (tolower(user) == "bih") {
+  rootdir <- "C:/Users/bihmo/UW START Dropbox/Bih Epse Cuba Moki Suh/"
+} else if (tolower(user) == "sarah") {
+  rootdir <- "C:/Users/sshaw/UW START Dropbox/Sarah Shaw/"
+} else if (tolower(user) == "darcy") {
+  rootdir <-"/Users/darcyrao/Dropbox"
+} else {
+  print("No filepath")
+}
+
+input_dir <- file.path(rootdir, "START_229_Gender Equity/Working Files/Data/KE_2022_constructed_data")
+
+rerun_model = T
+
+
+subset = "rural"
+population_subset = "children_under5" # options: full, given_birth, children_under5
+
+
+nreps = 100
+
+starting_kClass = 2
+
+ending_kClass = 5
+
+
+if(ending_kClass < starting_kClass){
+  message("ERROR: Ending K Class must be larger than starting class.")
+  stop()
+} else{
+  num_kClasses <- (ending_kClass - starting_kClass) + 1
+}
+
+
+const <- data.table(read.xlsx(file.path(input_dir, "9_Kenya_DHS_construct_mapping_PCA_to_LCA.xlsx"),sheet = 'Sheet 1'))
+
+# Subset to keep = 1
+
+# Keep only final decision vars
+if(subset %like% "urban"){
+  const <- const[str_detect(tolower(const$urban_currentLCA), "^keep")]  
+} else if(subset %like% "rural"){
+  const <- const[str_detect(tolower(const$rural_currentLCA), "^keep")]
+} else{
+  message("ISSUE: Check subset. Should be one of: urban, rural")
+  break
+}
+
+const <- const[!duplicated(const$f.var.name),]
+
+print(const$var.name)
+
+```
+
+### 1.3 Import the data
+
+```{r, include = F}
+
+#dim(var) #25 unique variables from PCA
+
+vulnerability <- readRDS(file.path(input_dir, "4_Kenya_DHS_vulnerability.rds"))
+outcomes <- readRDS(file.path(input_dir, "1_Kenya_DHS_outcomes.rds"))
+
+dhs.seg <- merge(vulnerability, outcomes, by="caseid", all.x=T)
+dhs.seg <- data.table(dhs.seg)
+dhs.seg <- dhs.seg[sshort %like% "long"]
+
+# restrict to subset
+if(population_subset == "given_birth"){
+  dhs.seg <- dhs.seg[v201 >= 1]
+} else if(population_subset == "children_under5"){
+  dhs.seg <- dhs.seg[kids.under5 >= 1]
+
+} else if(population_subeset == "full"){
+  message("Not subsetting based on population. Using full sample of ", subset)
+} else{
+  stop("Please check the population_subset parameter. Should be given_birth, children_under5, or full")
+
+}
+
+# Subset by place of residence 
+if(subset %like% "urban"){
+  dhs.seg <- dhs.seg[hh.urban == 1]  
+} else if(subset %like% "rural"){
+  dhs.seg <- dhs.seg[hh.urban == 0]  
+} else{
+  message("ISSUE: Check subset. Should be one of: urban, rural")
+  break
+}
+
+```
+
+### 1.3b Check for missing data
+```{r}
+# Look for missing data
+missing_pattern(data.table(dhs.seg[, const$var.name, with = F]))[[2]]
+
+```
+
+
+### 1.4 Generate formatted data for poLCA package
+
+
+```{r, fig.height = 20, include = F}
+#str(var)
+table(const$var.type, useNA = "always") #28 binary, 1 binary (string), 8 categorical, 3 categorical-ordinal
+```
+
+### 1.5 Out of PCA
+
+```{r, include = F}
+#Note that the sheet = 'Sheet1' came from script 7; and sheet = 'final_var' was manually added after PCA (and might need to be updated after the first round of LCA).
+#Domain 1: Healthcare and mental models: travtime.fac.cat
+#Domain 2: Household economics: earnings.type, electric.assets.index, hh.land.owntype2, household.assets.index.cat, partner.working.yn, work.seasonal2 
+#Domain 3: Household relationships: age.diff.bi, hh.kidwom.rat.2plus, highestyearsedinHH.7plus, husb.ed.mtprim2, jdwd.index.cat, w.financial.acct
+#Domain 4: Natural and human systems: cook.wood, hh.electricity, hh.wat.time, toilet.loc, transpo.index.cat, transport.mode2, wall, water, slum1 (urban only)
+
+pca.var <- const$var.name
+
+#lapply(dhs.seg[, pca.var, with =F],class)
+
+```
+
+### 1.6 Data preparation for LCA
+
+```{r, include = F}
+# var$var.type, 3 types: binary, categorical, ordinal
+
+#recode for LCA, recode those that are actually binary but has characters (string) (or not numeric) to (0,1)
+
+con.var <- const[str_detect(var.type, "continuous|ordinal"), var.name]
+cat.var <- const[var.type %like% 'categorical', var.name]
+bin.var <- const[var.type %like% 'binary', var.name]
+catbin.var <- const[str_detect(var.type, "categorical|binary"), var.name]
+
+# Subset to only relevant for lca and compete cases
+dhs.seg <- dhs.seg[, c(pca.var, "caseid"), with = F]
+dhs.seg <- drop_na(dhs.seg)
+
+```
+
+```{r, include = F}
+
+# make a reformatted version
+dhs.seg_reform <- copy(dhs.seg)
+
+## For ordinal re-categorize to start at 1
+
+## setting binary to be 1/2
+for(var.i in bin.var){
+  
+  if("yes" %in% unique(dhs.seg_reform[,get(var.i)])){
+    dhs.seg_reform[, (var.i) := as.character(get(var.i))]
+    dhs.seg_reform[get(var.i) == "yes", (var.i) := "1"]
+    dhs.seg_reform[get(var.i) == "no", (var.i) := "0"]
+
+  }
+  
+  dhs.seg_reform[, (var.i) := as.numeric(get(var.i))]  
+  
+  message(var.i)
+  print(dhs.seg_reform[, .N, get(var.i)])
+  
+    
+}
+
+for(var.i in bin.var){
+  dhs.seg_reform[get(var.i) == 1, (var.i) := 2]
+  dhs.seg_reform[get(var.i) == 0, (var.i) := 1]
+}
+
+## setting nominal (categorical) to be coded as 1,2, (here they are all character, no factor...
+dhs.seg_reform <- data.frame(dhs.seg_reform)
+
+## setting nominal to be coded as 1,2,...
+for(i in 1:length(cat.var)){
+  var.class <- class(dhs.seg_reform[,cat.var[i]])
+  if(var.class=='factor'){
+    dhs.seg_reform[,cat.var[i]] <- as.numeric(dhs.seg_reform[,cat.var[i]])
+  }
+  if(var.class=='character'){
+    dhs.seg_reform[,cat.var[i]] <- as.numeric(as.factor(dhs.seg_reform[,cat.var[i]]))
+  }
+    if(var.class=='numeric'){ # specifically for indices labeled as categorical
+    dhs.seg_reform <- data.table(dhs.seg_reform)
+      dhs.seg_reform[, (cat.var[i]) := get(cat.var[i]) + 1]  
+      dhs.seg_reform <- data.frame(dhs.seg_reform)
+  }
+  print(table( dhs.seg_reform[,cat.var[i]]))
+}
+
+dhs.seg_reform <- data.table(dhs.seg_reform)
+
+
+
+
+# Recategorize so that 0 is not part of the index 
+for(var.i in con.var){
+  dhs.seg_reform[, (var.i) := get(var.i) + 1]  
+}
+
+
+```
+
+
+Data preparation for plot (?)
+
+
+## 2. LCA  
+
+### 2.1. Model, statistics, distribution
+
+```{r}
+
+if(rerun_model == T){
+
+  f <- as.formula(paste0("cbind(", paste(pca.var, collapse = ", "), ")~1"))
+  
+
+class_comp <- data.frame('k' = starting_kClass:ending_kClass, 'BIC' = numeric(num_kClasses), 'AIC' = numeric(num_kClasses), 'Chisq' = numeric(num_kClasses), 'llh' = numeric(num_kClasses), 'iter' = numeric(num_kClasses), post.prob = numeric(num_kClasses) ) #'converged' = logical(9))
+pred_class <- list()
+
+lca_results <- list()
+
+
+for (i in 1:num_kClasses) {
+
+  mod.i <- (starting_kClass:ending_kClass)[i]
+
+  cat("\nRunning model with", mod.i, "classes...\n")
+
+  #when knitting partially run models, comment out from here
+  res.all <- tryCatch({
+    dir.create(file.path(input_dir, paste0("LCA/",subset,"/sub_models/k", mod.i)), recursive = T, showWarnings = F)
+
+    res.all <- lapply(1:nreps, function(j){
+        res.j <- poLCA(f, dhs.seg_reform, nclass = (mod.i), maxiter = 5000, tol = 1e-7, nrep = 1, verbose = FALSE)
+        saveRDS(res.j, file.path(file.path(input_dir, paste0("LCA/",subset,"/sub_models//k",mod.i, "/res_", j, ".rds" ))))
+
+        return(res.j)
+      })
+
+
+
+  }, error = function(e) {
+    cat("An error occurred: ", e$message, "\n")
+    return(NULL)
+  })
+
+  saveRDS(res.all, file.path(file.path(input_dir, paste0("LCA/",subset,"/sub_models//k",mod.i, "/res.all_templist", ".rds" ))))
+
+    lliks <- unlist(lapply(1:nreps, function(x){round(res.all[[x]]$llik,1)}))
+
+    max_llik.mod <- which.max(lliks)[1]
+    mod_llik.mod <- which(lliks == mfv(lliks)[max(length(mfv(lliks)))])[1]
+
+    saveRDS(res.all[[max_llik.mod]], file.path(file.path(input_dir, paste0("LCA/",subset,"/sub_models//k",mod.i, "/res_max", ".rds" ))))
+        saveRDS(res.all[[mod_llik.mod]], file.path(file.path(input_dir, paste0("LCA/",subset,"/sub_models//k",mod.i, "/res_mod", ".rds" ))))
+
+
+   res <- res.all[[max_llik.mod]]
+   lca_results[[i]] <- res.all[[max_llik.mod]]
+
+     # when knitting partially run models, uncomment out below 
+
+    #   res <- readRDS(file.path(file.path(input_dir, paste0("LCA/",subset,"/sub_models//k",mod.i, "/res_max", ".rds" ))))
+    # 
+    # lca_results[[i]] <- res
+
+
+  if (is.null(res)) {
+    cat("The poLCA function did not return results for", mod.i, "classes.\n")
+    class_comp[class_comp$k == (mod.i), ] <- c((mod.i), NA, NA, NA, NA, NA, NA, FALSE)
+    next
+  }
+   
+  # posterior prob
+  res_posterior <- as.data.frame(res$posterior) %>%
+    cbind(pred_class=res$predclass) %>%
+    mutate(id = row_number()) %>%
+    reshape2::melt(id.vars=c("id", "pred_class"), variable.name="cluster", value.name = "prob") %>%
+    group_by(id) %>%
+    mutate(max_prob = max(prob)) %>%
+    dplyr::filter(prob == max_prob) %>%
+    group_by() %>%
+    dplyr::summarize(avg_prob = mean(prob))
+   
+  class_comp[class_comp$k == (mod.i), ] <- c((mod.i), res$bic %||% NA, res$aic %||% NA, res$Chisq %||% NA, res$llik %||% NA, res$numiter %||% NA, res_posterior$avg_prob %||% NA)
+  
+  if (!is.null(res$predclass)) {
+    dhs.seg$cluster <- res$predclass
+    dhs.seg_reform$cluster <- res$predclass
+    names(dhs.seg)[names(dhs.seg)=='cluster'] <- paste0('cluster_k',(mod.i))
+    names(dhs.seg_reform)[names(dhs.seg_reform)=='cluster'] <- paste0('cluster_k',(mod.i))
+  } else {
+    warning("Model with", mod.i, "classes did not converge or there was another issue in obtaining class memberships.")
+  }
+}
+
+saveRDS(class_comp, file.path(input_dir, paste0("LCA/", subset, "/class_comp.rds")))
+
+saveRDS(lca_results, file.path(input_dir, "LCA/", subset, "/lca_results.rds" ))
+
+saveRDS(dhs.seg, file=file.path(input_dir, "LCA/", subset, "/dhs.seg.rds"))
+
+saveRDS(dhs.seg_reform, file = file.path(input_dir, "LCA/", subset, "/dhs.seg_reform.rds"))
+
+
+} else{
+  
+  class_comp <- readRDS(file.path(input_dir, paste0("LCA/", subset, "/class_comp.rds")))
+  
+  lca_results <- readRDS(file.path(input_dir, "LCA/", subset, "/lca_results.rds" ))
+  
+  dhs.seg <- readRDS(file=file.path(input_dir, "LCA/", subset, "/dhs.seg.rds"))
+  
+  dhs.seg_reform<- readRDS(file=file.path(input_dir, "LCA/", subset, "/dhs.seg_reform.rds"))
+
+}
+
+```
+
+### 2.2 Convergence 
+
+#### Convergence stats, individual K models
+```{r}
+class_comp <- data.table(class_comp)
+  
+agg <- lapply(starting_kClass:ending_kClass, function(k.i){
+  
+  print(k.i)
+  
+  ki.mod.fits <- lapply(1:nreps, function(rep){
+    
+    mod <- readRDS(file.path(input_dir, paste0("LCA/",subset,"/sub_models//k", k.i, "/res_", rep, ".rds")))
+    mod_posterior <- as.data.frame(mod$posterior) %>%
+      cbind(pred_class=mod$predclass) %>%
+      mutate(id = row_number()) %>%
+      reshape2::melt(id.vars=c("id", "pred_class"), variable.name="cluster", value.name = "prob") %>%
+      group_by(id) %>%
+      mutate(max_prob = max(prob)) %>%
+      dplyr::filter(prob == max_prob) %>%
+      group_by() %>%
+      dplyr::summarize(avg_prob = mean(prob))
+    plot_dt <- cbind(dhs.seg, predclass = mod$predclass)
+    plot_dt <- cbind(plot_dt, data.table(k = k.i, rep = rep, aic = mod$aic, bic = mod$bic, llik = mod$llik, post.prob = mod_posterior$avg_prob))
+
+    return(plot_dt)
+    
+  }) %>% rbindlist(use.names = T)
+  
+  ki.mod.fits[, k_model := paste0("k", k)]
+
+  ki.mod.fits <- ki.mod.fits[order(llik, rep)]
+  
+  ki.mod.fits[, order := .GRP, by = rep]
+  
+  counts <- ki.mod.fits[, .N, .(rep, predclass)]
+  counts <- counts[order(rep, N)]
+  counts[, relabel := seq_len(.N), by = rep]
+  
+  ki.mod.fits <- merge(ki.mod.fits, counts[,.(rep,predclass,relabel)])
+
+  # Adjust likelihoods 
+  ki.mod.fits[, llik := round(llik, 0)]
+  
+  max_llik = max(unique(ki.mod.fits$llik))
+  n_llik = length(unique(ki.mod.fits$llik))
+  min_llik = min(unique(ki.mod.fits$llik))
+  mod_llik_n = length(mfv(ki.mod.fits$llik))
+  
+  if(mod_llik_n > 1){
+    print("More than 1 mode")
+    mod_llik <- max(mfv(ki.mod.fits$llik))
+  } else{
+    mod_llik = mfv(ki.mod.fits$llik, 0)
+  }
+  
+  percent_mle =  sum(ki.mod.fits$llik == max_llik)/length(ki.mod.fits$llik)
+  percent_mod =  sum(ki.mod.fits$llik == mod_llik)/length(ki.mod.fits$llik)
+  max_llik.aic = max(unique(ki.mod.fits[llik == max_llik, round(aic, 0)]))
+  max_llik.bic = max(unique(ki.mod.fits[llik == max_llik, round(bic, 0)]))
+  max_llik.postprob = max(unique(ki.mod.fits[llik == max_llik, round(post.prob, 3)]))
+  
+  class_comp.i <- data.table(k = k.i, aic = max_llik.aic, bic = max_llik.bic, n_llik = n_llik, min_llik, max_llik, percent_mle, mod_llik_n, mod_llik, percent_mod, post.prob = max_llik.postprob)
+
+  ki.mod.fits <- merge(ki.mod.fits, class_comp.i[, .(llik = mod_llik, mod_llik_model = TRUE)], all.x=T, by = "llik")
+  ki.mod.fits[is.na(mod_llik_model), mod_llik_model := FALSE]
+  
+  ki.mod.fits <- merge(ki.mod.fits, class_comp.i[, .(llik = max_llik, max_llik_model = TRUE)], all.x=T, by = "llik")
+  ki.mod.fits[is.na(max_llik_model), max_llik_model := FALSE]
+  
+  convergence_histograms.i <- 
+    ggplot(unique(ki.mod.fits[k == k.i, .(k_model, rep, llik)])) + 
+  geom_bar(aes(x = llik),color = "black", lwd=1) + 
+  theme_bw() + 
+  ggtitle(paste0("K-", k.i, " Log-Likelihoods"))  
+  
+  
+  
+convergence_tracking_plot.i <- ggplot(ki.mod.fits[k == k.i]) + 
+    geom_bar(aes(x = order, fill = as.factor(relabel), color = mod_llik_model)) +
+    scale_color_manual(breaks = c(F,T), values = c("white", "black")) + 
+    facet_wrap(~k, ncol = 1) + 
+    ggtitle(paste0("K-", k.i, " - Convergence of 100 reps"), subtitle = "Black outlined reps = modal likelihood") + xlab("Rep (ordered from min to max likelihood)") + 
+  theme_bw() +  theme(legend.position = "none")
+  
+  modal <- ki.mod.fits[mod_llik_model == TRUE & rep == ki.mod.fits[mod_llik_model == TRUE, min(rep)]]
+  max <- ki.mod.fits[max_llik_model == TRUE & rep == ki.mod.fits[max_llik_model == TRUE, min(rep)]]
+
+  sankey_data <- merge(modal[, .(caseid, mod_relabel = relabel)], max[, .(caseid, max_relabel = relabel)])
+
+  links <- sankey_data[,.(value = .N),.(source = paste0("mod_", mod_relabel), 
+                                       target = paste0("max_", max_relabel))]
+     
+ 
+  
+    nodes <- data.frame(
+      name=c(as.character(links$source), 
+             as.character(links$target)) %>% unique()
+    )
+    
+    # With networkD3, connection must be provided using id, not using real name like in the links dataframe.. So we need to reformat it.
+    links$IDsource <- match(links$source, nodes$name)-1 
+    links$IDtarget <- match(links$target, nodes$name)-1
+    
+    # Make the Network
+    p <- sankeyNetwork(Links = links, Nodes = nodes,
+                       Source = "IDsource", Target = "IDtarget",
+                       Value = "value", NodeID = "name", 
+                       sinksRight=FALSE)
+  
+  
+    return(list(mod.fits = ki.mod.fits, 
+                class_comp = class_comp.i,
+                convergence_histograms.i = convergence_histograms.i,
+                convergence_tracking_plot.i = convergence_tracking_plot.i,
+                p = p))
+  
+}) #%>% rbindlist(use.names = T, fill = T)
+
+ps <- lapply(1:length(agg), function(i){ return(agg[[i]]$p) } )
+convergence_histograms <- lapply(1:length(agg), function(i){ return(agg[[i]]$convergence_histograms.i) } )
+convergence_tracking_plots <- lapply(1:length(agg), function(i){ return(agg[[i]]$convergence_tracking_plot.i) } )
+
+# Sankeys cannot print with for-loop, incopatibility with package?
+# sorry, hardcoding for now 
+print_sankey <- function(i){
+  
+  if(i %in% 1:num_kClasses){
+    convergence_histograms[[i]]
+    convergence_tracking_plots[[i]]
+    ps[[i]]
+    
+  }
+  
+}
+
+print_sankey(1)
+print_sankey(2)
+print_sankey(3)
+print_sankey(4)
+print_sankey(5)
+print_sankey(6)
+print_sankey(7)
+print_sankey(8)
+print_sankey(9)
+
+
+```
+
+#### Convergence stats, across K models
+
+```{r, fig.width= 15, fig.height=25}
+
+mod.fits <- rbindlist(lapply(1:length(agg), function(i){ return(agg[[i]]$mod.fits) } ))
+class_comp <- rbindlist(lapply(1:length(agg), function(i){ return(agg[[i]]$class_comp) } ))
+
+kable(class_comp)
+
+convergence_histograms <- ggplot(unique(mod.fits[, .(k_model, rep, llik)])) + 
+  geom_bar(aes(x = llik), color = "black", lwd = 1) + 
+  facet_wrap(~k_model, scales = "free_y", ncol = 1) + 
+  theme_bw() + 
+  ggtitle(paste0("K", starting_kClass, "-", ending_kClass, " Log-Likelihoods"))
+
+print(convergence_histograms)
+
+mod.fits[, k_model := factor(k_model, levels = paste0("k", starting_kClass:ending_kClass), ordered = T)]
+
+convergence_tracking_plot <- ggplot(mod.fits[]) + 
+    geom_bar(aes(x = order, fill = as.factor(relabel), color = mod_llik_model)) +
+    scale_color_manual(breaks = c(F,T), values = c("white", "black"), name = "Modal Likelihood Models") + 
+    facet_wrap(~k, ncol = 1) + 
+    ggtitle(paste0("Convergence of ", nreps, " reps"), subtitle = "Black outlined reps = modal likelihood") + xlab("Rep (ordered from min to max likelihood)") + 
+  theme_bw() +  theme(legend.position = "none")
+
+print(convergence_tracking_plot)
+
+saveRDS(class_comp, file.path(input_dir, paste0("LCA/", subset, "/class_comp.rds")))
+saveRDS(mod.fits, file.path(input_dir, paste0("LCA/", subset, "/mod.fits.rds")))
+
+
+
+```
+
+### 2.3 Posterior probability
+```{r}
+ggplot(data=class_comp, aes(x=k, y=post.prob)) + geom_line(color="blue") + geom_point()
+```
+
+## 3. Graphics
+
+```{r}
+#head(dhs.seg_[c("cluster_k2", "cluster_k3", "cluster_k4")])
+#names(dhs.seg)
+#table(dhs.seg$cluster_k5)
+#dim(dhs.seg_reform)
+#table(dhs.seg_reform$cluster_k10)
+
+dist <- dhs.seg_reform %>%
+  dplyr::select(paste0("cluster_k", starting_kClass:ending_kClass)) %>%
+  gather(class_num, "value", 1:num_kClasses) %>% 
+  group_by(class_num,value) %>% 
+  summarise(count = n()) %>% 
+  mutate(perc = round((count/dhs.seg_reform[,.N])*100, digits = 1)) %>%
+  ungroup()
+
+dist$class_num <- factor(dist$class_num, levels = paste0("cluster_k", starting_kClass:ending_kClass))
+
+ggplot(dist, aes(x = class_num, y = perc, fill = as.factor(value))) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  theme_minimal() +
+  coord_flip() +
+  labs(x = "Cluster Number", y = "Percentage", fill = "Value", title = "Stacked Bar Chart of Class Number") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+### 3.1  Heatmap (binary)
+
+```{r}
+# Define function
+generate_heatmap <- function(data, cluster_var_name) {
+  
+  data_modified <- data %>%
+    dplyr::select(c(bin.var), .data[[cluster_var_name]]) %>%
+    mutate(across(all_of(bin.var), ~ifelse(. == 2, 1, 0), .names = "prop_{.col}")) %>%
+    group_by(.data[[cluster_var_name]]) %>%
+    summarise(across(starts_with("prop_"), mean))
+ 
+  
+  df_long <- data_modified %>%
+    pivot_longer(cols = starts_with("prop_"), names_to = "var.label", values_to = "prop") 
+  df_long <- data.table(df_long)
+  df_long[, var.label := gsub(var.label, pattern = "^prop_", replacement = "")]
+
+  
+  df_long <- merge(df_long, const, by.x = "var.label", by.y = "f.var.name")
+  
+  
+  # Plot
+  heatmap <- ggplot(df_long, aes(x = factor(.data[[cluster_var_name]]), y = var.name, fill = prop)) +
+    geom_tile() +
+  facet_grid(rows = vars(category), scales = "free_y", space = "free_y", switch = "y") +
+  scale_fill_gradient2(low = "#313695", mid = "#FFFFBF", high = "#A50026", midpoint = 0.5, breaks = seq(0, 1, 0.1)) +
+  labs(title = "Proportion within cluster", x = '', y = '', fill = 'Proportion within\ncluster') +
+  theme_minimal() +
+  theme(legend.text = element_text(size = 5),
+        legend.title = element_text(size = 5),
+        axis.text = element_text(size = 6),
+        strip.background = element_blank(),
+        strip.placement = "outside",
+        strip.text.y = element_text(angle = 180, size = 5),
+        panel.spacing.y = unit(0.8, "lines")) 
+    
+  return(heatmap)
+}
+
+# Define the cluster variables
+cluster_vars <-  paste0("cluster_k", starting_kClass:ending_kClass)
+heatmaps_list <- purrr::map(cluster_vars, ~ generate_heatmap(dhs.seg_reform, .x))
+
+# To print each heatmap
+purrr::walk(heatmaps_list, print)
+```
+
+### 3.2. Stacked bar (categorical)
+
+```{r}
+custom_labels <- c(
+  "ed.lev.cat1" = "Women's edu",
+  "wd.ownincome.cat" = "Women's deicision on own income",
+  "jd.hlth.cat" = "Joined decision on women's health",
+  "work.seasonal" = "Women's work",
+  "water.cat" = "Water source",
+  "partner.working" = "Partner's work",
+  "auto.contra" = "Autonomy on contraceptive",
+  "vehic.index" = "Vehicle ownership")
+   
+
+```
+
+```{r, fig.height = 25, fig.width=15, echo=F,include=T,results="asis"}
+generate_stacked <- function(data, cluster_col) {
+
+  long_dt <- data %>%
+    dplyr::select(all_of(catbin.var), .data[[cluster_col]]) %>%
+    pivot_longer(cols = all_of(catbin.var), names_to = "variable", values_to = "level", values_transform = as.character)
+
+  cluster_size <- long_dt %>%
+    group_by(.data[[cluster_col]], variable) %>%
+    summarize(cluster_total = n(), .groups = 'drop')
+
+  agg_dt <- long_dt %>%
+    group_by(.data[[cluster_col]], variable, level) %>%
+    summarize(ct = n(), .groups = 'drop') %>%
+    left_join(cluster_size, by = c(cluster_col, "variable")) %>% 
+    mutate(pct = round((ct/cluster_total)*100, 2)) %>% 
+    mutate(var.label = ifelse(variable %in% names(custom_labels), 
+                            custom_labels[variable], 
+                            variable))
+
+agg_dt <- merge(agg_dt, const, by.x = "variable", by.y = "f.var.name")
+
+agg_group1 <- "Healthcare and mental models"
+agg_dt1 <- agg_dt
+agg_dt1 <- agg_dt1 %>% filter(variable %in% const[category == agg_group1, var.name])
+plot_HC <- ggplot(agg_dt1, aes(x=var.label, y=pct, fill=level)) + 
+  geom_bar(stat="identity", position="stack",width=0.5) + 
+  facet_grid(category ~ .data[[cluster_col]], scales = "free_y", space = "free_x", switch = "y") + 
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  #scale_fill_manual(values=my_colors) +
+  labs(title = paste0("Distribution within ", agg_group1), x = "", y = "") +
+  guides(fill=guide_legend(title="Level")) +
+  geom_text(aes(label=round(pct, 0)), position=position_stack(vjust=0.5), size=3) +
+  theme_minimal() +
+  coord_flip()  +
+  theme(strip.background = element_blank(),
+        strip.placement = "outside",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 12),
+        panel.spacing = unit(0.1, "lines"), 
+        plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"),
+        strip.text = element_text(size = 6) )
+
+agg_group2 <- "Household relationships"
+agg_dt2 <- agg_dt
+agg_dt2 <- agg_dt2 %>% filter(variable %in% const[category == agg_group2, var.name])
+Plot_HR <- ggplot(agg_dt2, aes(x=var.label, y=pct, fill=level)) + 
+  geom_bar(stat="identity", position="stack",width=0.5) + 
+  facet_grid(category ~ .data[[cluster_col]], scales = "free_y", space = "free_x", switch = "y") + 
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  #scale_fill_manual(values=my_colors) +
+  labs(title = "Distribution within Household relationships", x = "", y = "") +
+  guides(fill=guide_legend(title="Level")) +
+  geom_text(aes(label=round(pct, 0)), position=position_stack(vjust=0.5), size=3) +
+  theme_minimal() +
+  coord_flip()  +
+  theme(strip.background = element_blank(),
+        strip.placement = "outside",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 12),
+        panel.spacing = unit(0.1, "lines"), 
+        plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"),
+        strip.text = element_text(size = 6) )
+
+agg_group3 = "Woman and her past experiences"
+agg_dt3 <- agg_dt
+agg_dt3 <- agg_dt3 %>% filter(variable %in% const[category == agg_group3, var.name])
+Plot_woman <- ggplot(agg_dt3, aes(x=var.label, y=pct, fill=level)) + 
+  geom_bar(stat="identity", position="stack",width=0.5) + 
+  facet_grid(category ~ .data[[cluster_col]], scales = "free_y", space = "free_x", switch = "y") + 
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  #scale_fill_manual(values=my_colors) +
+  labs(title = "Distribution within Woman and her past experience", x = "", y = "") +
+  guides(fill=guide_legend(title="Level")) +
+  geom_text(aes(label=round(pct, 0)), position=position_stack(vjust=0.5), size=3) +
+  theme_minimal() +
+  coord_flip()  +
+  theme(strip.background = element_blank(),
+        strip.placement = "outside",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 12),
+        panel.spacing = unit(0.1, "lines"), 
+        plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"),
+        strip.text = element_text(size = 6) )
+
+agg_group4 = "Household economics"
+agg_dt4 <- agg_dt
+agg_dt4 <- agg_dt4 %>% filter(variable %in% const[category == agg_group4, var.name])
+Plot_HE <- ggplot(agg_dt4, aes(x=var.label, y=pct, fill=level)) + 
+  geom_bar(stat="identity", position="stack",width=0.5) + 
+  facet_grid(category ~ .data[[cluster_col]], scales = "free_y", space = "free_x", switch = "y") + 
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  #scale_fill_manual(values=my_colors) +
+  labs(title = "Distribution within Household Economics", x = "", y = "") +
+  guides(fill=guide_legend(title="Level")) +
+  geom_text(aes(label=round(pct, 0)), position=position_stack(vjust=0.5), size=3) +
+  theme_minimal() +
+  coord_flip()  +
+  theme(strip.background = element_blank(),
+        strip.placement = "outside",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 12),
+        panel.spacing = unit(0.1, "lines"), 
+        plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"),
+        strip.text = element_text(size = 6) )
+
+agg_group5 = "Natural and human systems"
+agg_dt5 <- agg_dt
+agg_dt5 <- agg_dt5 %>% filter(variable %in% const[category == agg_group5, var.name])
+Plot_NHS <- ggplot(agg_dt5, aes(x=var.label, y=pct, fill=level)) + 
+  geom_bar(stat="identity", position="stack",width=0.5) + 
+  facet_grid(category ~ .data[[cluster_col]], scales = "free_y", space = "free_x", switch = "y") + 
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  #scale_fill_manual(values=my_colors) +
+  labs(title = "Distribution within Natural and human systems", x = "", y = "") +
+  guides(fill=guide_legend(title="Level")) +
+  geom_text(aes(label=round(pct, 0)), position=position_stack(vjust=0.5), size=3) +
+  theme_minimal() +
+  coord_flip()  +
+  theme(strip.background = element_blank(),
+        strip.placement = "outside",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 12),
+        panel.spacing = unit(0.1, "lines"), 
+        plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"),
+        strip.text = element_text(size = 6) )
+
+
+combined_plot <- ggarrange(plot_HC, Plot_HR, Plot_woman, Plot_HE, Plot_NHS, ncol = 1)
+return(combined_plot)
+}
+
+# List of cluster columns
+cluster_columns <-  paste0("cluster_k", starting_kClass:ending_kClass)
+plot_list <- list()
+
+for (col in cluster_columns) {
+  plot_list[[col]] <- generate_stacked(dhs.seg, col)
+}
+
+for (i in 1:length(plot_list)) {
+  
+  print(plot_list[[i]])
+}
+```
+
+
+
+
+
+### 3.3  Sankey Diagram
+```{r}
+
+make_sankey <- function(data){
+  links <- lapply(starting_kClass:(ending_kClass-1), function(i){
+  
+link.i<-  data[,.(value = .N),.(source = paste0("k", i, "_", get(paste0("cluster_k", i))), target = paste0("k", i+1, "_",get(paste0("cluster_k", i+1))))]
+  
+return(link.i)
+}) %>% rbindlist(use.names = T, fill = T)
+
+
+
+# From these flows we need to create a node data frame: it lists every entities involved in the flow
+nodes <- data.frame(
+  name=c(as.character(links$source), 
+  as.character(links$target)) %>% unique()
+)
+ 
+# With networkD3, connection must be provided using id, not using real name like in the links dataframe.. So we need to reformat it.
+links$IDsource <- match(links$source, nodes$name)-1 
+links$IDtarget <- match(links$target, nodes$name)-1
+ 
+# Make the Network
+p <- sankeyNetwork(Links = links, Nodes = nodes,
+              Source = "IDsource", Target = "IDtarget",
+              Value = "value", NodeID = "name", 
+              sinksRight=FALSE,
+                height = 500,
+  width = 1000)
+return(p)
+}
+
+sankey <- make_sankey(dhs.seg)
+
+sankey
+
+```
+
+
+### 3.4 BIC
+
+```{r}
+ggplot(data=class_comp, aes(x=k, y=bic)) + geom_line(color="blue") + geom_point()
+  
+
+```

@@ -1,0 +1,831 @@
+---
+title: "11_Indonesia_typing tool (updated)"
+author: "Lang Gao"
+date: "2023-11-05"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '6'
+  word_document:
+    toc: yes
+    toc_depth: '6'
+  pdf_document:
+    toc: yes
+    toc_depth: '6'
+---
+
+<style type="text/css">
+
+h1.title {
+  font-size: 21px;
+  color: Blue;
+  text-align: center;
+}
+h4.author { /* Header 4 - and the author and data headers use this too  */
+    font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+h4.date { /* Header 4 - and the author and data headers use this too  */
+  font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+</style>
+
+</br>
+
+
+***
+---
+
+#######################################
+1. Setting up the script
+#######################################
+
+Set up filepath, notation and packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(scipen = 100, digits = 4)
+
+#Set filepath
+setwd("/Users/langgao/Downloads/Freelancer projects/Sonder/Indonesia/Segmentation")
+```
+
+Load packages
+```{r,echo=FALSE}
+rm(list=ls())
+pacman::p_load("dplyr","rpart", "rpart.plot", "caret", "randomForest", "data.table", "ggplot2", "gplots", "tidyverse", "readxl","corrplot", "ggplot2", "ranger", "haven")
+```
+
+Read in data
+```{r}
+rural_seg <- readRDS("LCA/Round2/9b_dhs.seg_reform_rural_seg.rds")
+urban_seg <- readRDS("LCA/Round2/9b_dhs.seg_reform_urban_seg.rds")
+#dim(rural_seg) #50833 320
+#dim(urban_seg) #50129 320
+```
+
+```{r}
+HH <-  data.table(read_dta("IDHR71FL.DTA"))
+IR <-  data.table(read_dta("IDIR71FL.DTA"))
+HH$hhid <- str_trim(HH$hhid)
+IR$caseid <- str_trim(IR$caseid)
+
+HH$v001<-HH$hv001
+HH$v002<-HH$hv002
+IR$wt<-IR$v005/1000000
+
+#cooking fuel, level 4 (biogas), 6 (coal, lignite), 9 (straw/shrubs/grass), 10 (agricultural crop), 7 (charcoal) too small, make them "other". In IND data, it is 1~10 and 95 (no food cooked in house)
+HH <- HH %>% 
+  mutate(cook.fuel = case_when(
+    hv226 == 1 ~ "Electricity",
+    hv226 == 2 ~ "LPG",
+    hv226 == 3 ~ "Natural gas",
+    hv226 == 5 ~ "Kerosene",
+    hv226 == 8 ~ "Wood",
+    hv226 == 95 ~ "No food cooked",
+    TRUE ~ "Other"))
+
+IR.merge <- IR %>% select(v001, v002, caseid)
+HH.merge <- HH %>% select(v001, v002, cook.fuel)
+cook.merge <-merge(IR.merge, HH.merge, by=c("v001", "v002"), all.x=T)
+
+rural_seg <- merge(rural_seg, cook.merge, by="caseid", all.x=T)
+#dim(rural_seg) #50833
+urban_seg <- merge(urban_seg, cook.merge, by="caseid", all.x=T)
+#dim(urban_seg) #50129
+```
+
+##############################################
+2. Rename and merge
+##############################################
+
+Use 3-class model
+```{r}
+#table(rural_seg$cluster_k3)
+rural_seg <- rural_seg %>%
+  dplyr::rename(k3 = cluster_k3) %>%
+  mutate(k3 = recode(k3, `1` = "R1", `2` = "R2", `3` = "R3"))
+#class(rural_seg$k3) #50833   320
+table(rural_seg$k3) # 7635 22433 20765 
+#dim(rural_seg)
+
+urban_seg <- urban_seg %>%
+  dplyr::rename(k3 = cluster_k3) %>%
+  mutate(k3 = recode(k3, `1` = "U1", `2` = "U2", `3` = "U3"))
+#class(urban_seg$k3)
+#dim(urban_seg) #50129   320
+table(urban_seg$k3) #10658 19532 19939
+```
+
+## 0. Explore asset index and slum1
+```{r, echo=TRUE}
+#By Nov 1, 2023, we decided to use the 3-class clustering solution for rural, and 3-class for urban. 
+#Here we are also exploring which (focused) asset indices to use in the decision tree: first of all, wealth.index.ur.ord is difficult to be translated in the typing tool. Secondly, we have tried not to use wealth.index.ur.ord and use the focused asset indices constructed in script. The overall accuracy level is not as good as using wealth.index.ur.ord. Therefore, we will explore the asset index hoping to achieve higher accuracy level without necessarily complicate the decision tree, by
+#(1) plot the 3-class over the individual asset variables (all of them are binary) using heatmap
+#(2) construct the focused indices after leaving out the less relevant individual asset
+```
+
+```{r, echo=TRUE}
+#the factor analysis DHS conducted for wealth.index.ur.ord included the type of cooking fuel. I cannot see the result of the analysis. So I am just group a few categories that have too small smaple (for the random forests to be able to run appropriately)
+#also to add here are the housing materials (hh.roof,hh.wall,hh.floor) and bank account (hh.bank.acct).
+
+#for toilet, we also had hh.toilet.type from script 4, which has 3 levels (flush, pit latrine, no facility). Will try this one as well because in the factor analysis there were a few categories about the natural toilet (e.g. pool, pond)
+
+#will make these cat.var: hh.roof, hh.wall, hh.floor, hh.toilet.type. cook.fuel
+#will add this to bin.var: hh.bank.acct
+```
+
+```{r}
+bin.var.0 <- c("hh.animal","hh.phone","hh.watch","hh.computer","hh.electricity","hh.radio","hh.tv","hh.refrig", "hh.tele", "hh.fan", "hh.wash", "hh.air", "hh.bike","hh.motor","hh.car", "hh.bank.acct", "living")
+
+bin.var <- c("hh.land","hh.animal","hh.phone","hh.watch","hh.computer","hh.electricity","hh.radio","hh.tv","hh.refrig", "hh.tele", "hh.fan", "hh.wash", "hh.air", "hh.bike","hh.motor","hh.car", "hh.bank.acct", "living")
+
+cat.var <- c("hh.roof", "hh.wall", "hh.floor", "hh.toilet.type", "cook.fuel")
+
+#here, I need to make same transformation for them (except for hh.land - already done) like what we did for the binary variables before LCA, make 1 => 0, make 1 => 2
+
+for (var_name in bin.var.0) {
+  rural_seg[, (var_name) := ifelse(.SD[[var_name]] == 0, 1, 2), .SDcols = var_name]
+  cat("\nVariable:", var_name, "\n")
+  print(table(rural_seg[, ..var_name]))
+}
+
+for (var_name in bin.var.0) {
+  urban_seg[, (var_name) := ifelse(.SD[[var_name]] == 0, 1, 2), .SDcols = var_name]
+  cat("\nVariable:", var_name, "\n")
+  print(table(urban_seg[, ..var_name]))
+}
+```
+
+Save and read for use later
+```{r}
+saveRDS(rural_seg, file="11_typing_tool/rural_seg.rds")
+saveRDS(urban_seg, file="11_typing_tool/urban_seg.rds")
+```
+
+```{r, echo=TRUE}
+#Later, in case we need further exploration, we can also skip the steps above and load data from here:
+rural_seg <- readRDS("11_typing_tool/rural_seg.rds")
+urban_seg <- readRDS("11_typing_tool/urban_seg.rds")
+#dim(rural_seg) #50833 323
+#dim(urban_seg) #50129   323
+#table(rural_seg$k3)
+#table(rural_seg$cook.fuel)
+```
+
+```{r}
+var <- read_xlsx("7_Construct_mapping.xlsx",sheet = 'asset')
+var <- var[!duplicated(var$f.var.name),]
+#dim(var) #16 3 #the asset here excluded animal-driven cart and boat with motor (dropped after script 5)
+```
+
+### 0.1. Rural: differentiation, association
+#### 0.1.1. Heatmap for differenciation
+```{r}
+rural_seg.k3 <- rural_seg %>% 
+  dplyr::select(c(bin.var),k3) 
+#dim(rural_seg.k3) #50833 17
+#view(rural_seg.k3)
+
+rural_seg.k3[, (bin.var) := lapply(.SD, function(x) ifelse(x == 2, 1, 0)), .SDcols = bin.var]
+
+rural_seg.k3 <- rural_seg.k3 %>%
+  group_by(k3) %>%
+  summarise_all(mean, na.rm = TRUE)
+#dim(rural_seg.k3)
+#view(rural_seg.k3)
+
+#define var.labels
+custom_labels <- c(
+  "car" = "Own car",
+  "motor" = "Own motorcycle",
+  "bike" = "Own bike",
+  "air" = "Own air conditioner",
+  "wash" = "Own washing machine",
+  "fan" = "Own fan",
+  "tele" = "Own landline",
+  "refrig" = "Own refrigrator",
+  "tv" = "Own TV",
+  "radio" = "Own radio",
+  "electricity" = "Have electricity",
+  "computer" = "Own computer",
+  "watch" = "Own watch",
+  "phone" = "Own mobile phone",
+  "animal" = "Own Animals",
+  "land" = "Own land for agriculture")
+
+# Reshape dataframe for ggplot
+df_long <- rural_seg.k3 %>%
+  pivot_longer(cols = starts_with("hh."), names_to = "var.label", values_to = "prop") %>%
+  mutate(var.label = str_remove(var.label, "hh."),
+         label = ifelse(var.label %in% names(custom_labels), custom_labels[var.label], var.label),
+         label_percent = scales::percent(prop, accuracy = 1))
+#view(df_long)
+df_long <- merge(df_long, var, by.x = "var.label", by.y = "f.var.name")
+
+df_long$category <- gsub("Personal assets", "Personal\nassets", df_long$category)
+df_long$category <- gsub("Productive assets", "Productive\nassets", df_long$category)
+
+df_long$category <- factor(df_long$category, 
+                    levels = c("House assets", "Personal\nassets", "Vehicle assets", "Productive\nassets"),ordered = TRUE)
+
+# Plot
+ggplot(df_long, aes(x = factor(k3), y = label, fill = prop)) +
+  geom_tile() +
+  facet_grid(rows = vars(category), scales = "free_y", space = "free_y", switch = "y") +
+  scale_fill_gradient2(low = "#313695", mid = "#FFFFBF", high = "#A50026", midpoint = 0.5, breaks = seq(0, 1, 0.1)) +
+  labs(title = "Proportion within cluster (rural)", x = '', y = '', fill = 'Proportion within\ncluster') +
+  theme_minimal() +
+  theme(legend.text = element_text(size = 7),
+        legend.title = element_text(size = 7),
+        axis.text = element_text(size = 7),
+        strip.background = element_blank(),
+        strip.placement = "outside",
+        strip.text.y = element_text(angle = 180, size = 6),
+        panel.spacing.y = unit(0.8, "lines"))
+```
+
+#### 0.1.2. Correlation heatmap (for numeric)
+```{r, fig.width=12, fig.height=10}
+test.r <- rural_seg %>% 
+  dplyr::select(c(bin.var),wealth.index.ur.ord)
+#str(test)
+
+cor_matrix.r <- cor(test.r, method = "spearman", use = "complete.obs")
+
+# Visualize the correlation matrix
+corrplot(cor_matrix.r, method = "color", order = "hclust",
+         addCoef.col = "black", 
+         tl.col = "black", tl.srt = 45, 
+         diag = FALSE) 
+
+wealth_corr.r <- cor_matrix.r["wealth.index.ur.ord", ]
+sorted_corr.r <- sort(wealth_corr.r, decreasing = TRUE)
+
+# Print the sorted correlations
+print(sorted_corr.r)
+```
+
+#### 0.1.3. Ordinal random forests
+```{r, echo=TRUE}
+# # Initially, I was thinking about using proportional odds logistic regression model (POLR) given that the outcome variable has a natural order but the distances between levels are not known; and by using polr it will split the outcome into applicable binary combinations. But, considering the assumption for using this model (e.g. the relationship between the independent variables and the log-odds of the dependent variable is proportional, i.e. being in a higher category versus a lower category of the outcome are constant, across all binary splits made by the ordinal outcome). I don't think we can assume that in this case. Therefore, I am trying ordinal random forests 
+
+#converted the cetegoricals (character) to factors
+rural_seg$hh.roof <- factor(rural_seg$hh.roof, levels = c("natural", "rudimentary", "finished"))
+rural_seg$hh.wall <- factor(rural_seg$hh.wall, levels = c("natural", "rudimentary", "finished"))
+rural_seg$hh.floor <- factor(rural_seg$hh.floor, levels = c("natural", "rudimentary", "finished"))
+rural_seg$hh.toilet.type <- factor(rural_seg$hh.toilet.type, levels = c("flush toilet", "pit latrine", "no facility"))
+rural_seg$cook.fuel <- factor(rural_seg$cook.fuel, levels = c("Electricity", "LPG", "Natural gas", "Kerosene", "Wood", "No food cooked", "Other"))
+
+forest.wealth.r <- rural_seg %>% 
+  dplyr::select(c(bin.var), c(cat.var), wealth.index.ur.ord) %>% 
+  drop_na()
+#dim(forest.wealth.r) #50391    22
+
+rf_model <- ranger(formula = wealth.index.ur.ord ~ hh.land + hh.animal + hh.phone + hh.watch + hh.computer + hh.electricity + hh.radio + hh.tv + hh.refrig + hh.tele + hh.fan + hh.wash + hh.air + hh.bike + hh.motor + hh.car + hh.bank.acct + hh.floor + hh.wall + hh.roof + hh.toilet.type + cook.fuel, data = forest.wealth.r, probability = TRUE, respect.unordered.factors = "order",importance = 'impurity')
+
+# Output the model
+print(rf_model)
+#The model estimates the probabilities of each level of the ordinal outcome for each observation. 500 trees were grown to make up the forest, trained using 50391 observations. By setting target node size being 10, the algorithm tried to make sure that each leaf in the trees has at least 10 cases. The Brier score (0.194) is a measure for evaluating the accuracy of predicted probabilities. It's a type of mean squared error for probability forecasts and can range from 0 (perfect accuracy) to 1 (worst accuracy). Note that this score has been improved compared to 2 earlier tests (not including housing materials, toilet and bank account, and cook.fuel)
+
+rf_model$variable.importance
+#These scores are computed during the construction of the forest. In general, the higher the score, the more important the variable is in predicting the outcome. By changing the variables in the different models, the scores and OOB all vary. The following are results of the latest round with highest accuracy.
+  ##cook.fuel, hh.refrig, hh.tv are the top three most important variables (especially cook.fuel), the strongest predictors of the wealth index. This is similar to what we see on the heatmap above.
+  ##also strong are: hh.fan, hh.wash, hh.toilet.type, hh.motor, hh.floor
+  ##variables like hh.tele (landline ownership) and hh.air (air conditioner) have very low importance scores, indicating that they are not very useful in predicting the wealth index for the rural population here compared to the other variables. Of note, this might be different for urban.
+  ##roof, electricity, radio, land, animal do not have high scores in this content (but not too low). It could be that for most of the rural households, they share similar ownership status of such assets. Keep for now, will let the randomForest decide later.
+```
+
+### 0.2. Urban: differentiation, association
+#### 0.2.1. Heatmap for differentiation
+```{r}
+urban_seg.k3 <- urban_seg %>% 
+  dplyr::select(c(bin.var),k3) 
+#dim(urban_seg.k3) #50129 17
+#view(urban_seg.k3)
+
+urban_seg.k3[, (bin.var) := lapply(.SD, function(x) ifelse(x == 2, 1, 0)), .SDcols = bin.var]
+
+urban_seg.k3 <- urban_seg.k3 %>%
+  group_by(k3) %>%
+  summarise_all(mean, na.rm = TRUE)
+#dim(urban_seg.k3)
+#view(urban_seg.k3)
+
+#define var.labels
+custom_labels <- c(
+  "car" = "Own car",
+  "motor" = "Own motorcycle",
+  "bike" = "Own bike",
+  "air" = "Own air conditioner",
+  "wash" = "Own washing machine",
+  "fan" = "Own fan",
+  "tele" = "Own landline",
+  "refrig" = "Own refrigrator",
+  "tv" = "Own TV",
+  "radio" = "Own radio",
+  "electricity" = "Have electricity",
+  "computer" = "Own computer",
+  "watch" = "Own watch",
+  "phone" = "Own mobile phone",
+  "animal" = "Own Animals",
+  "land" = "Own land for agriculture")
+
+# Reshape dataframe for ggplot
+df_long.u <- urban_seg.k3 %>%
+  pivot_longer(cols = starts_with("hh."), names_to = "var.label", values_to = "prop") %>%
+  mutate(var.label = str_remove(var.label, "hh."),
+         label = ifelse(var.label %in% names(custom_labels), custom_labels[var.label], var.label),
+         label_percent = scales::percent(prop, accuracy = 1))
+#view(df_long.u)
+df_long.u <- merge(df_long.u, var, by.x = "var.label", by.y = "f.var.name")
+
+df_long.u$category <- gsub("Personal assets", "Personal\nassets", df_long.u$category)
+df_long.u$category <- gsub("Productive assets", "Productive\nassets", df_long.u$category)
+
+df_long.u$category <- factor(df_long.u$category, 
+                    levels = c("House assets", "Personal\nassets", "Vehicle assets", "Productive\nassets"),ordered = TRUE)
+
+# Plot
+ggplot(df_long.u, aes(x = factor(k3), y = label, fill = prop)) +
+  geom_tile() +
+  facet_grid(rows = vars(category), scales = "free_y", space = "free_y", switch = "y") +
+  scale_fill_gradient2(low = "#313695", mid = "#FFFFBF", high = "#A50026", midpoint = 0.5, breaks = seq(0, 1, 0.1)) +
+  labs(title = "Proportion within cluster (urban)", x = '', y = '', fill = 'Proportion within\ncluster') +
+  theme_minimal() +
+  theme(legend.text = element_text(size = 7),
+        legend.title = element_text(size = 7),
+        axis.text = element_text(size = 7),
+        strip.background = element_blank(),
+        strip.placement = "outside",
+        strip.text.y = element_text(angle = 180, size = 6),
+        panel.spacing.y = unit(0.8, "lines"))
+```
+
+#### 0.2.2. Correlation heatmap
+```{r, fig.width=12, fig.height=10}
+test.u <- urban_seg %>% 
+  dplyr::select(c(bin.var),wealth.index.ur.ord)
+#str(test.u)
+
+cor_matrix.u <- cor(test.u, method = "spearman", use = "complete.obs")
+
+# Visualize the correlation matrix
+corrplot(cor_matrix.u, method = "color", order = "hclust",
+         addCoef.col = "black", 
+         tl.col = "black", tl.srt = 45, 
+         diag = FALSE) 
+
+wealth_corr.u <- cor_matrix.u["wealth.index.ur.ord", ]
+sorted_corr.u <- sort(wealth_corr.u, decreasing = TRUE)
+
+# Print the sorted correlations
+print(sorted_corr.u)
+
+#hh.wash, hh.computer, hh.refrig
+```
+
+#### 0.2.3. Ordinal random forests
+```{r, echo=TRUE}
+urban_seg$hh.roof <- factor(urban_seg$hh.roof, levels = c("natural", "rudimentary", "finished"))
+urban_seg$hh.wall <- factor(urban_seg$hh.wall, levels = c("natural", "rudimentary", "finished"))
+urban_seg$hh.floor <- factor(urban_seg$hh.floor, levels = c("natural", "rudimentary", "finished"))
+urban_seg$hh.toilet.type <- factor(urban_seg$hh.toilet.type, levels = c("flush toilet", "pit latrine", "no facility"))
+urban_seg$cook.fuel <- factor(urban_seg$cook.fuel, levels = c("Electricity", "LPG", "Natural gas", "Kerosene", "Wood", "No food cooked", "Other"))
+
+forest.wealth.u <- urban_seg %>% 
+  dplyr::select(c(bin.var), c(cat.var), wealth.index.ur.ord) %>% 
+  drop_na()
+#dim(forest.wealth.u) #49758    22
+
+uf_model <- ranger(formula = wealth.index.ur.ord ~ hh.land + hh.animal + hh.phone + hh.watch + hh.computer + hh.electricity + hh.radio + hh.tv + hh.refrig + hh.tele + hh.fan + hh.wash + hh.air + hh.bike + hh.motor + hh.car + hh.bank.acct + hh.floor + hh.wall + hh.roof + hh.toilet.type + cook.fuel, data = forest.wealth.u, min.node.size = 20, probability = TRUE, respect.unordered.factors = "order",importance = 'impurity')
+
+# Output the model
+print(uf_model)
+
+uf_model$variable.importance
+#here I made the trees a bit less complicated. 
+  ##The most strong ones for urban are: hh.car, hh.refrig, hh.air, cook.fuel, hh.computer. 
+  ##Also strong are: hh.wash, hh.floor, hh.bank.acct
+  ##in the case of urban, scores for  hh.roof, hh.electricity and hh.phone are very low.
+```
+
+```{r, echo=TRUE}
+#Look at the heatmaps above for rural and for urban, we can see differences like: for rural, hh.tele (own landline) and hh.air (own air conditionor) are (nearly) 0%; hh.radio and productive assets also do not vary much across the 3 segments. While for urban, hh.air (own air conditioner) matters, and hh.electricity does not help. Since we are going to create trees for rural and urban separately, I will create new focused indices separately for rural and for urban.
+
+#For rural:
+  ##house assets: hh.tele (own landline) is 0% for all, hh.air (own air conditioner) is 0%, 2%, 4%. These 2 can be removed. hh.radio also does not differentiate much, 9%, 13%, 17%. Although hh.electricity does not differentiate much either, will keep it as it can be critical for some rural population. So, new house.r.index: hh.wash, hh.fan, hh.refrig, hh.tv, hh.electricity
+  ##productive assets: hh.land and hh.animals are around 55%-60% across 3 segments. Do not differentiate, will not use productive assets
+  ##vehicle assets: car gives relatively less differentiation, but it can potentially be critical for rural population. Keep it as it is.
+  ##person assets: R1 and R3 are similar, but quite different from R2, keep it as it is.
+
+#For urban:
+  ##house asstes: hh.electricity, hh.tv. and hh.tele are to be removed. So, the new house.u.index: hh.wash, hh.fan. hh.refrig, hh.radio, hh.air
+  ##productive assets: hh.land does not do anything, hh.animal shows a bit more differences. Use hh.land directly
+  ##vehicle assets: keep it as it is
+  ##person assets: take mobile phone out. So, new person.u.index: hh.watch, hh.computer
+```
+
+### 0.3. Create new focused asset indices
+```{r}
+#note that we have all these asset variables binary, numeric, coded as 1 (0) and 2 (1)
+#class(rural_seg$hh.electricity)
+rural_seg[, (bin.var) := lapply(.SD, function(x) ifelse(x == 2, 1, 0)), .SDcols = bin.var]
+urban_seg[, (bin.var) := lapply(.SD, function(x) ifelse(x == 2, 1, 0)), .SDcols = bin.var]
+#now they are all coded back to 0 and 1, numeric
+
+#Rural new index (for house)
+
+rural_seg <- rural_seg %>% 
+  mutate(house.sum = if(all(is.na(c(hh.electricity, hh.tv, hh.refrig, hh.fan, hh.wash)))) NA else hh.electricity + hh.tv + hh.refrig + hh.fan + hh.wash, na.rm = TRUE)
+#table(rural_seg$house.sum) #from 0 to 5
+  ## For index, create 3 levels: [0:1] ~ 0, [2:3] ~ 1, [4:5] ~ 2
+rural_seg <- rural_seg %>% mutate(house.r.index = case_when(
+  house.sum %in% c(2,3) ~ 1,
+  house.sum %in% c(4,5) ~ 2,
+  TRUE ~ 0))
+#table(rural_seg$house.r.index)
+#sum(9832,22826,18175) #50833
+
+#Urban new indices
+urban_seg <- urban_seg %>% 
+  mutate(house.sum = if(all(is.na(c(hh.refrig, hh.fan, hh.wash, hh.radio, hh.air)))) NA else hh.refrig + hh.fan + hh.wash + hh.radio + hh.air, na.rm = TRUE)
+#table(urban_seg$house.sum) #from 0 to 5
+urban_seg <- urban_seg %>% mutate(house.u.index = case_when(
+  house.sum %in% c(2,3) ~ 1,
+  house.sum %in% c(4,5) ~ 2,
+  TRUE ~ 0))
+#table(urban_seg$house.u.index)
+#sum(12345,26156,11628) #50129
+
+urban_seg <- urban_seg %>% 
+  mutate(person.sum = if(all(is.na(c(hh.watch, hh.computer)))) NA else hh.watch + hh.computer, na.rm = TRUE)
+#table(urban_seg$person.sum) #from 0 to 2, can be used directly
+```
+
+### 0.4. Look into slum1
+```{r, echo=TRUE}
+#table(rural_seg$slum1) #slum1 does not matter to rural, as all of them are "1" (initially 1 before data transformation for LCA)
+#table(urban_seg$slum1) #for now, 2 is urban non-slum, 3 is urban slum. Whether being a slumn comes from the following 4 individual binary variables (0,1): sum them up, if >=2, urban slum: 
+#table(urban_seg$floor)
+#table(urban_seg$wall)
+#table(urban_seg$living)
+#table(urban_seg$latrine)
+
+#Looking at the heatmap, wall does not differentiate much. Also, overall, the ratios are low (make sense, the protion living in slum is small). To create a new slum.sum for urban_seg to add up: floor, living, latrine. It gives a range of 0 to 3. To make it easier for translating to typing tool, keep slum.sum
+```
+
+```{r, eval=FALSE}
+slum.var <- c("floor","wall","living","latrine")
+
+urban_seg.slum <- urban_seg %>% 
+  select(c(slum.var),k3) 
+#dim(urban_seg.slum) #50129 5
+#view(urban_seg.slum)
+
+urban_seg.slum <- urban_seg.slum %>%
+  group_by(k3) %>%
+  summarise_all(mean, na.rm = TRUE)
+#dim(urban_seg.slum)
+#view(urban_seg.slum)
+
+custom_labels <- c(
+  "floor" = "Not finished floor",
+  "wall" = "Not finished wall",
+  "living" = "3+ sharing a sleeping room",
+  "latrine" = "Use latrine toilet"
+)
+
+# Reshape dataframe for ggplot
+df_long <- urban_seg.slum %>%
+  pivot_longer(cols = slum.var, names_to = "var.label", values_to = "prop") %>%
+  mutate(var.label = as.character(var.label),  # Convert var.label to character
+         label = ifelse(var.label %in% names(custom_labels), custom_labels[var.label], var.label),
+         label_percent = scales::percent(prop, accuracy = 1))
+#view(df_long)
+
+# Plot
+ggplot(df_long, aes(x = factor(k3), y = label, fill = prop)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "#313695", mid = "#FFFFBF", high = "#A50026", midpoint = 0.5, breaks = seq(0, 1, 0.1)) +
+  labs(title = "Proportion within cluster (urban)", x = 'Cluster', y = '', fill = 'Proportion within\ncluster') +
+  theme_minimal() +
+  theme(legend.text = element_text(size = 5),
+        legend.title = element_text(size = 5),
+        axis.text = element_text(size = 6),
+        strip.background = element_blank(),
+        strip.placement = "outside",
+        strip.text.y = element_text(angle = 180, size = 5),  
+        panel.spacing.y = unit(0.8, "lines"))  
+```
+
+```{r, echo=TRUE}
+#drop the one about the vall
+urban_seg <- urban_seg %>% 
+  mutate(slum.sum = if(all(is.na(c(floor, living, latrine)))) NA else floor + living + latrine, na.rm = TRUE)
+#table(urban_seg$slum.sum) #from 0 to 3
+
+#in another attempt later (where we will use individual varable), since "floor", "living" and type of toilet will already be used, no need to duplicate
+```
+
+```{r}
+set.seed(123)
+```
+
+```{r, echo=TRUE}
+#The cp parameter in the rpart function and related functions stands for "complexity parameter." It is used to control the size of the decision tree and help prevent overfitting. A smaller cp will result in a larger tree, and a larger cp will result in a smaller tree
+
+#In the round 2 of LCA, 21 variables were included in the f: ed.lev.cat1,early.cohab.19, marr.cohab, media.sum.2plus, husb.ed.mtprim, wd.ownincome.cat, highestyearsedinHH.7plus, num.under15.2plus, jd.hlth.cat, work.seasonal, water.cat, wealth.index.ur.ord, hh.watpur.appr, hh.toilet.flush, med.distance, med.alone, disc.fp.yn, insurance.cov.cat1, slum1, vehic.index, hh.land
+  ##It is not necessary to include all of them in the decision tree model. We should evaluate each variable based on its Theoretical relevance, practical consideration, and avoid multi-collinearity, to decide which ones to include
+```
+
+##############################################
+3. Trees for 3-class
+##############################################
+
+## 1. Use wealth.index.ur.ord
+### 1.1.Urban
+#### 1.1.1. Grow tree
+```{r, echo=TRUE, eval=FALSE}
+#We will not use this; but just to keep the notes and results here, using the accuracy etc. as a reference
+
+# not include: med.distance + med.alone (low contribution, also would not be actually used even if included)
+tree_urban <- rpart(k3 ~ ed.lev.cat1 + early.cohab.19 + marr.cohab + media.sum.2plus + husb.ed.mtprim + wd.ownincome.cat + highestyearsedinHH.7plus + num.under15.2plus + jd.hlth.cat + work.seasonal + water.cat + wealth.index.ur.ord + hh.watpur.appr + hh.toilet.flush + disc.fp.yn + insurance.cov.cat1 + slum1 + vehic.index + hh.land,  data=urban_seg, control=rpart.control(cp=0.001, xval=5), method="class")
+
+plotcp(tree_urban)
+#Variables actually used in tree construction (12): early.cohab.19, ed.lev.cat1, hh.watpur.appr,  husb.ed.mtprim, insurance.cov.cat1, marr.cohab, media.sum.2plus, slum1, vehic.index, water.cat, wealth.index.ur.ord, work.seasonal 
+## not used: wd.ownincome.cat + highestyearsedinHH.7plus + num.under15.2plus + jd.hlth.cat + hh.toilet.flush + disc.fp.yn + hh.land
+
+# the line for error occurs starts getting flat and stablized at a cp value of around 0.0021 (tree size 16). But we can also consider the tree with a size of 13 (corresponding to a cp value slightly larger than 0.0021), as it's simpler and its performance is within one standard error of the minimum.
+## A tree with large size is relatively complex, which captures more nuances in the data but can also lead to overfitting (i.e., the model might perform well on the training data but may not generalize as well to new, unseen data). While the cross-validation error is a measure that helps in understanding how the model might perform on unseen data, a large tree size still raises concerns about overfitting. Because even with cross-validation, a very detailed tree can capture noise in the data or very specific patterns that don't represent the underlying distribution. Later will prune the tree as well.
+
+printcp(tree_urban)
+# set xval = 5 to evaluate the performance of a machine learning model and to reduce the risk of overfitting. By setting xval = 5, the dataset is divided into 5 equal (or nearly equal) parts or "folds". The cross-validation process will be repeated 5 times, with each of the 5 folds used exactly once as a validation set. The remaining 4 folds are used for training. A more robust estimate of a model's performance by cross-validation.
+```
+
+#### 1.1.2. Prune tree
+```{r, fig.height=15, fig.width=12, eval=FALSE}
+tree_urban_prune<-prune(tree_urban, cp=tree_urban$cptable[which.min(tree_urban$cptable[,"xerror"]),"CP"])
+# Can try prunign using different error cutoffs
+tree_urban_prune<-prune(tree_urban, cp=.0021)
+
+plot(tree_urban_prune, uniform=TRUE, main="Classification Tree for Urban LCA")
+text(tree_urban_prune, use.n=TRUE, all=TRUE, cex=.7)
+```
+
+```{r, fig.height=10, fig.width= 12, eval=FALSE}
+prp(tree_urban_prune, type=5, varlen=0, cex=1)
+
+PredictCART_train_urban <- predict(tree_urban_prune, data=urban_seg, type="class")
+PredictCART_train_urban <- as.factor(PredictCART_train_urban)
+urban_seg$k3 <- as.factor(urban_seg$k3)
+confusionMatrix(data=PredictCART_train_urban, urban_seg$k3)
+```
+
+```{r, echo=TRUE}
+# Although wealth.index.ur.ord was found to be among the most influential in making splits in the tree, it is difficult to use practically because this variable is from already-constructed DHS data. In the typing tool, it is difficult to ask questions to defnite what is wealth.index.ur.ord >= 3 or < 3.
+# FYI: In DHS-7, it takes better account of urban-rural differences in the scores and indicators of wealth, the wealth index is created in three steps. 
+## (1) In the first step, a subset of indicators common to both urban and rural areas is used to create wealth scores for households in both areas. Categorical variables to be used are transformed into separate dichotomous (0-1) indicators, as are groupings of certain discrete variables such as numbers of different types of animals. These variables and those that are continuous are then analyzed using principal components analysis to produce a common factor score for each household. ## (2) In a second step, separate factor scores are produced for households in urban and in rural areas using area-specific indicators. 
+## (3) The third step combines the separate area-specific factor scores to produce a nationally applicable combined wealth index by adjusting the area-specific score through regression on the common factor scores.
+```
+
+## 2. No asset but use cook.fuel, living, hh.floor
+### 2.1.Urban 
+#### 2.1.1. Grow tree
+```{r, echo=TRUE}
+tree_urban <- rpart(k3 ~ ed.lev.cat1 + early.cohab.19 + marr.cohab + media.sum.2plus + husb.ed.mtprim + wd.ownincome.cat + highestyearsedinHH.7plus + work.seasonal + water.cat + hh.watpur.appr + hh.toilet.flush + disc.fp.yn + insurance.cov.cat1 + vehic.index + hh.land + cook.fuel + living + hh.floor,  data=urban_seg, control=rpart.control(cp=0.001, xval=5), method="class")
+
+plotcp(tree_urban)
+#Variables actually used in tree construction (12, 1 fewer than using slum1): early.cohab.19, ed.lev.cat1, hh.toilet.flush, hh.watpur.appr, highestyearsedinHH.7plus, husb.ed.mtprim, insurance.cov.cat1, marr.cohab, media.sum.2plus, slum.sum, vehic.index, water.cat. 
+#Later on, we can see the accuracy is slightly improved.
+
+#the line for error occurs starts getting flat and stabilized at a cp value of 0.0022 (tree size 13). 
+
+printcp(tree_urban)
+```
+
+#### 2.1.2. Prune tree
+```{r, fig.height=15, fig.width=12}
+tree_urban_prune<-prune(tree_urban, cp=tree_urban$cptable[which.min(tree_urban$cptable[,"xerror"]),"CP"])
+# Can try prunign using different error cutoffs
+tree_urban_prune<-prune(tree_urban, cp=.0016)
+#plot(tree_urban_prune, uniform=TRUE, main="Classification Tree for Urban LCA")
+#text(tree_urban_prune, use.n=TRUE, all=TRUE, cex=.7)
+```
+
+```{r, fig.height=10, fig.width= 12}
+prp(tree_urban_prune, type=5, varlen=0, cex=1)
+
+PredictCART_train_urban <- predict(tree_urban_prune, data=urban_seg, type="class")
+PredictCART_train_urban <- as.factor(PredictCART_train_urban)
+urban_seg$k3 <- as.factor(urban_seg$k3)
+confusionMatrix(data=PredictCART_train_urban, urban_seg$k3)
+```
+
+### 2.2.Rural
+#### 2.2.1. Grow tree
+```{r, echo=TRUE}
+tree_rural <- rpart(k3 ~ ed.lev.cat1 + early.cohab.19 + marr.cohab + media.sum.2plus + husb.ed.mtprim + wd.ownincome.cat + highestyearsedinHH.7plus + num.under15.2plus + jd.hlth.cat + work.seasonal + water.cat + hh.watpur.appr + hh.toilet.flush + disc.fp.yn + insurance.cov.cat1 + vehic.index + hh.land + hh.floor + living +cook.fuel,  data=rural_seg, control=rpart.control(cp=0.001, xval=5), method="class")
+
+plotcp(tree_rural)
+#Variables actually used in tree construction (12):cook.fuel, ed.lev.cat1, hh.land, hh.toilet.flush,   hh.watpur.appr, highestyearsedinHH.7plus, husb.ed.mtprim, insurance.cov.cat1, marr.cohab,            media.sum.2plus, vehic.index, water.cat               
+
+# the line for error occurs starts getting flat and stablized at a cp value of between 0.0043 and 0.0023. Can use cp=0.0033 (tree size 11). 
+
+printcp(tree_rural)
+```
+
+#### 2.2.2. Prune tree
+```{r, fig.height=15, fig.width=12}
+tree_rural_prune<-prune(tree_rural, cp=tree_rural$cptable[which.min(tree_rural$cptable[,"xerror"]),"CP"])
+# Can try prunign using different error cutoffs
+tree_rural_prune<-prune(tree_rural, cp=.0024)
+#plot(tree_rural_prune, uniform=TRUE, main="Classification Tree for Rural LCA")
+#text(tree_rural_prune, use.n=TRUE, all=TRUE, cex=.7)
+```
+
+```{r, fig.height=10, fig.width= 12}
+prp(tree_rural_prune, type=5, varlen=0, cex=1)
+
+PredictCART_train_rural <- predict(tree_rural_prune, data=rural_seg, type="class")
+PredictCART_train_rural <- as.factor(PredictCART_train_rural)
+rural_seg$k3 <- as.factor(rural_seg$k3)
+confusionMatrix(data=PredictCART_train_rural, rural_seg$k3)
+```
+
+## 3. Use new asset indices, cook.fuel, and slum breakdown
+```{r, echo=TRUE}
+# for urban, use: house.u.index, hh.land, person.sum, and use hh.car instead of vehic.index; and use cook.fuel, hh.floor, living, hh.toilet.type, living, hh.bank.acct
+# for rural, use: house.r.index, person.index, and keep keep vehic.index, and use cook.fuel, hh.floor, hh.toilet.type, living, bb.bank.acct
+```
+
+### 3.1.Urban
+#### 3.1.1. Grow tree
+```{r, echo=TRUE}
+# not include: med.distance + med.alone + wealth.index.ur.ord
+# In all these attempts, the cut-off for toilet always lands in the binary we used earlier, 
+#table(urban_seg$hh.toilet.flush)
+tree_urban <- rpart(k3 ~ ed.lev.cat1 + early.cohab.19 + marr.cohab + media.sum.2plus + husb.ed.mtprim + wd.ownincome.cat + highestyearsedinHH.7plus + work.seasonal + water.cat + hh.watpur.appr + disc.fp.yn + insurance.cov.cat1 + house.u.index + person.sum + hh.car + cook.fuel + hh.floor + living + hh.toilet.flush + living + hh.bank.acct, data=urban_seg, control=rpart.control(cp=0.001, xval= 5), method="class")
+
+plotcp(tree_urban)
+#Variables actually used in tree construction (15): cook.fuel, early.cohab.19, ed.lev.cat1, hh.bank.acct, hh.car,   hh.floor, hh.toilet.type, house.u.index, husb.ed.mtprim, insurance.cov.cat1 marr.cohab, media.sum.2plus, person.sum, water.cat, work.seasonal. After pruning the tree, there will be fewer
+
+# the line for error crosses at cp=0.002, to get further minimize the error.
+printcp(tree_urban)
+```
+
+#### 3.1.2. Prune tree
+```{r, fig.height=15, fig.width=12}
+tree_urban_prune<-prune(tree_urban, cp=tree_urban$cptable[which.min(tree_urban$cptable[,"xerror"]),"CP"])
+# Can try prunign using different error cutoffs
+tree_urban_prune<-prune(tree_urban, cp=.0017)
+#plot(tree_urban_prune, uniform=TRUE, main="Classification Tree for Urban LCA")
+#text(tree_urban_prune, use.n=TRUE, all=TRUE, cex=.7)
+```
+
+```{r}
+# After pruning the tree, house.u.index, vehic.indx are used, slum.sum as well - same as what we saw in the 1st round.
+# On accuracy: in this version, using cp=0.004 gives a relatively simple tree, and it reduced to 90.1% (it was 90.9% in the previous version)
+  ## If using slum1, 90.4% (but slum1 is not practical); taking hh.land in or out does not affect
+
+  ## by using cp=0.0032, it adds a step to the end of 2 branches (not too complicated) and improve the accuracy to 90.6%. Print this tree below.
+```
+
+```{r, fig.height=10, fig.width= 12}
+prp(tree_urban_prune, type=5, varlen=0, cex=1)
+
+PredictCART_train_urban <- predict(tree_urban_prune, data=urban_seg, type="class")
+PredictCART_train_urban <- as.factor(PredictCART_train_urban)
+urban_seg$k3 <- as.factor(urban_seg$k3)
+confusionMatrix(data=PredictCART_train_urban, urban_seg$k3)
+```
+
+### 3.2.Rural
+#### 3.2.1. Grow tree
+```{r, echo=TRUE}
+#similar to what we saw above in urban, cut-off for toilet always land in the binary we created before, so will use the binary to make it easier to translate typing tool
+# for rural, use: house.r.index, person.index, and keep keep vehic.index, and use cook.fuel, hh.floor, hh.toilet.flush, living, hh.bank.acct
+tree_rural <- rpart(k3 ~ ed.lev.cat1 + early.cohab.19 + marr.cohab + media.sum.2plus + husb.ed.mtprim + wd.ownincome.cat + highestyearsedinHH.7plus + num.under15.2plus + jd.hlth.cat + work.seasonal + water.cat + hh.watpur.appr + disc.fp.yn + insurance.cov.cat1 + vehic.index + house.r.index + person.index + cook.fuel + hh.floor + hh.toilet.flush + living + hh.bank.acct,  data=rural_seg, control=rpart.control(cp=0.001, xval=5), method="class")
+
+plotcp(tree_rural)
+#In this version [10]: cook.fuel, hh.floor, hh.toilet.type, highestyearsedinHH.7plus, house.r.index, husb.ed.mtprim,      marr.cohab, media.sum.2plus, vehic.index, water.cat
+#In the earlier version: variables actually used in tree construction (11): hh.toilet.flush, highestyearsedinHH.7plus, house.index, husb.ed.mtprim, insurance.cov.cat1, marr.cohab, media.sum.2plus, person.index, vehic.index, water.cat, work.seasonal.
+
+#The line for error occurs starts getting flat and stablized before the cp value of 0.0031. Can use cp = 0.0021 (tree size 16), to compare with cp=0.0018, or cp=0.0014, see which one gives better accuracy without complicating the tree. 
+
+printcp(tree_rural)
+```
+
+#### 3.2.2. Prune tree
+```{r, fig.height=15, fig.width=12}
+tree_rural_prune<-prune(tree_rural, cp=tree_rural$cptable[which.min(tree_rural$cptable[,"xerror"]),"CP"])
+# Can try prunign using different error cutoffs
+tree_rural_prune<-prune(tree_rural, cp=.0014)
+#plot(tree_rural_prune, uniform=TRUE, main="Classification Tree for Rural LCA")
+#text(tree_rural_prune, use.n=TRUE, all=TRUE, cex=.7)
+```
+```{r, echo=TRUE}
+#Use cp=0.0043 (it slightly improved the accuracy without complicating the tree; using cp=0.033 does not necessarily improve the accuracy)
+#Similar to what is seen in urban, house.r.index and vehic.index are used.
+```
+
+```{r, fig.height=11, fig.width= 14}
+prp(tree_rural_prune, type=5, varlen=0, cex=1)
+
+PredictCART_train_rural <- predict(tree_rural_prune, data=rural_seg, type="class")
+PredictCART_train_rural <- as.factor(PredictCART_train_rural)
+rural_seg$k3 <- as.factor(rural_seg$k3)
+confusionMatrix(data=PredictCART_train_rural, rural_seg$k3)
+```
+
+## 4. Use individual strong variables
+### 4.1.Urban
+```{r, echo=TRUE}
+# for urban, use: do not use hh.roof, hh.electricity ,hh.phone
+# particularly strong: hh.car, hh.refrig, hh.air, cook.fuel, hh.computer, and also strong ones are: hh.wash, hh.floor, hh.bank.acct. 
+# also use hh.toilet.type, living instead of slum.sum
+# first try all (w/ the 3 dropped ones), then compare with only the strong and relatively strong one
+
+# In both attempts (also using smaller cp), the accuracy level is not necessarily better (even slightly lower than the version under section 3)
+```
+
+#### 4.1.1. Grow tree
+```{r, echo=TRUE}
+tree_urban <- rpart(k3 ~ hh.car + hh.refrig + hh.air + cook.fuel + hh.computer + hh.wash + hh.floor + hh.bank.acct + hh.toilet.type + living + ed.lev.cat1 + early.cohab.19 + marr.cohab + media.sum.2plus + husb.ed.mtprim + wd.ownincome.cat + highestyearsedinHH.7plus + num.under15.2plus + jd.hlth.cat + work.seasonal + water.cat + hh.watpur.appr + disc.fp.yn + insurance.cov.cat1 ,  data=urban_seg, control=rpart.control(cp=0.001, xval=5), method="class")
+
+plotcp(tree_urban)
+#In the version where only strongest and relatively strong ones are used, variables actually used in tree construction (18 - and here cook.fuel is used): cook.fuel, early.cohab.19, ed.lev.cat1, hh.air, hh.bank.acct, hh.car,         hh.computer, hh.floor, hh.refrig, hh.toilet.type, hh.wash, highestyearsedinHH.7plus, husb.ed.mtprim,          insurance.cov.cat1, marr.cohab, media.sum.2plus, water.cat, work.seasonal
+
+#In the version of all, variables actually used in tree construction (19): early.cohab.19, ed.lev.cat1, hh.air, hh.bank.acct, hh.bike, hh.car, hh.computer, hh.fan, hh.floor, hh.motor, hh.refrig, hh.toilet.type, hh.wash,      highestyearsedinHH.7plus, husb.ed.mtprim, insurance.cov.cat1, marr.cohab, media.sum.2plus, water.cat. But after pruning the tree, the accuracy does not improve.
+
+# the line for error occurs starts getting flat and stablized at a cp value of 0.0029 (tree size 16). Will use cp=0.0021 (tree size 18/19) where the line corsses sd =1 and compare.
+printcp(tree_urban)
+```
+
+#### 4.1.2. Prune tree
+```{r, fig.height=15, fig.width=12}
+tree_urban_prune<-prune(tree_urban, cp=tree_urban$cptable[which.min(tree_urban$cptable[,"xerror"]),"CP"])
+# Can try prunign using different error cutoffs
+tree_urban_prune<-prune(tree_urban, cp=.0017)
+```
+
+```{r, fig.height=10, fig.width= 12}
+prp(tree_urban_prune, type=5, varlen=0, cex=1)
+
+PredictCART_train_urban <- predict(tree_urban_prune, data=urban_seg, type="class")
+PredictCART_train_urban <- as.factor(PredictCART_train_urban)
+urban_seg$k3 <- as.factor(urban_seg$k3)
+confusionMatrix(data=PredictCART_train_urban, urban_seg$k3)
+```
+
+### 4.2.Rural
+```{r, echo=TRUE}
+#Strong and relatively strong ones;
+  ##cook.fuel, hh.refrig, hh.tv 
+  ##hh.fan, hh.wash, hh.toilet.type, hh.motor, hh.floor
+  ##also use hh.toilet.type + living
+#Drop: hh.tele, hh.air (air conditioner)
+  ##roof, electricity, radio, land, animal do not have high scores either
+#hh.land + hh.animal + hh.phone + hh.watch + hh.computer + hh.electricity + hh.radio + hh.tv + hh.refrig + hh.tele + hh.fan + hh.wash + hh.air + hh.bike + hh.motor + hh.car + hh.bank.acct + hh.floor + hh.wall + hh.roof + hh.toilet.type + cook.fuel
+```
+
+
+#### 4.2.1. Grow tree
+```{r, echo=TRUE}
+# not include: med.distance + med.alone + wealth.index.ur.ord
+tree_rural <- rpart(k3 ~ ed.lev.cat1 + early.cohab.19 + marr.cohab + media.sum.2plus + husb.ed.mtprim + wd.ownincome.cat + highestyearsedinHH.7plus + num.under15.2plus + work.seasonal + water.cat + hh.watpur.appr + disc.fp.yn + insurance.cov.cat1 + hh.land + hh.animal + hh.phone + hh.watch + hh.computer + hh.electricity + hh.radio + hh.tv + hh.refrig + hh.tele + hh.fan + hh.wash + hh.air + hh.bike + hh.motor + hh.car + hh.bank.acct + hh.floor + hh.wall + hh.roof + hh.toilet.type + cook.fuel + living,  data=rural_seg, control=rpart.control(cp=0.001, xval=5), method="class")
+
+#tree_rural <- rpart(k3 ~ ed.lev.cat1 + early.cohab.19 + marr.cohab + media.sum.2plus + husb.ed.mtprim + wd.ownincome.cat + highestyearsedinHH.7plus + num.under15.2plus + work.seasonal + water.cat + hh.watpur.appr + disc.fp.yn + insurance.cov.cat1 + cook.fuel + hh.refrig + hh.tv + hh.fan + hh.wash + hh.toilet.type + hh.motor + hh.floor + hh.toilet.type + living,  data=rural_seg, control=rpart.control(cp=0.001, xval=5), method="class")
+
+plotcp(tree_rural)
+#In this version, variables actually used in tree construction (12): cook.fuel, hh.fan,  hh.motor, hh.refrig,   hh.toilet.type, hh.tv, hh.watpur.appr, highestyearsedinHH.7plus, husb.ed.mtprim, marr.cohab, media.sum.2plus          water.cat 
+
+#In the version where all were included (except the 3 dropped ones), variables actually used in tree construction (15): cook.fuel, hh.bank.acct, hh.bike, hh.fan, hh.floor, hh.motor, hh.refrig, hh.toilet.type, hh.tv, hh.watpur.appr, highestyearsedinHH.7plus, husb.ed.mtprim, marr.cohab, media.sum.2plus, water.cat
+
+#The line for error crosses the sd line at cp=0.002. Compare with using cp = 0.0016. 
+
+printcp(tree_rural)
+```
+
+#### 4.2.2. Prune tree
+```{r, fig.height=15, fig.width=12}
+tree_rural_prune<-prune(tree_rural, cp=tree_rural$cptable[which.min(tree_rural$cptable[,"xerror"]),"CP"])
+# Can try prunign using different error cutoffs
+tree_rural_prune<-prune(tree_rural, cp=.0016)
+```
+
+```{r, fig.height=12, fig.width= 15}
+prp(tree_rural_prune, type=5, varlen=0, cex=1)
+
+PredictCART_train_rural <- predict(tree_rural_prune, data=rural_seg, type="class")
+PredictCART_train_rural <- as.factor(PredictCART_train_rural)
+rural_seg$k3 <- as.factor(rural_seg$k3)
+confusionMatrix(data=PredictCART_train_rural, rural_seg$k3)
+```
+
+

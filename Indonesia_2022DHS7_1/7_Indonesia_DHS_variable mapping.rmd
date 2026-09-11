@@ -1,0 +1,156 @@
+---
+title: "7_Indonesia_DHS_constrcu_mapping"
+author: "Lang Gao"
+date: "2023-10-13"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '6'
+  word_document:
+    toc: yes
+    toc_depth: '6'
+  pdf_document:
+    toc: yes
+    toc_depth: '6'
+---
+
+<style type="text/css">
+
+h1.title {
+  font-size: 21px;
+  color: Blue;
+  text-align: center;
+}
+h4.author { /* Header 4 - and the author and data headers use this too  */
+    font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+h4.date { /* Header 4 - and the author and data headers use this too  */
+  font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+</style>
+
+</br>
+
+
+***
+---
+
+#######################################
+1. Setting up the script
+#######################################
+
+Set up filepath, notation and packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(scipen = 100, digits = 4)
+
+#Set filepath
+setwd("/Users/langgao/Downloads/Freelancer projects/Sonder/Indonesia/Segmentation")
+```
+
+Load Packages
+```{r,echo=FALSE}
+rm(list=ls())
+pacman::p_load("readxl", "writexl", "zoo", "tidyverse")
+```
+
+Read and clean construct data
+```{r}
+# Later on we will merge this with the selected columns from "Exploratory_analysis_IND". For each country, we might create different variable names (especially during the exploratory phase) - see the column 1:3 in Exploratory_analysis_IND for example. So, if to do the construct mapping using this script, make sure the variable names created for this country are updated accordingly in the var.name of "Constructs and measures from Pathways qual work.xlsx" used for this country.
+
+const <- read_xlsx("Constructs and measures from Pathways qual work.xlsx",sheet = 'Integrated measures')
+
+const <- const[2:nrow(const),names(const) %in% c('Category','Sub-category','Factor/Construct','Variable names')]
+names(const) <- c('category','sub.category','construct','var.name')
+#view(const)
+```
+
+Carry construct name forward
+```{r}
+const$construct <- na.locf(const$construct)
+const$category <- na.locf(const$category)
+const$sub.category <- na.locf(const$sub.category)
+#view(const)
+```
+
+Remove rows without variable name and seperate into seperate columns
+```{r}
+const.complt <- const[!is.na(const$var.name),]
+const.complt <-  separate(const.complt,var.name, paste("var.name",1:60,sep="."), ",", extra = "merge")   #to make sure all variable names are include
+apply(const.complt,2,FUN = function(x){sum(is.na(x))==length(x)})   ## can drop variable 36 onwards 
+const.complt <- const.complt[,1:38]
+#view(const.complt)
+```
+
+Reshape to long dataset to have one variable per row
+```{r}
+const.long <- const.complt %>% gather(var, var.name, var.name.1:var.name.35)
+const.long <- const.long[!is.na(const.long$var.name),!names(const.long) %in% 'var']
+const.long$var.name <- gsub(' ',replacement = '',const.long$var.name)
+#view(const.long)
+```
+
+Check that vulnerabilities within multiple constructs are repeated
+```{r}
+length(const.long$var.name) #259
+length(unique(const.long$var.name)) #233
+tmp <- (const.long[duplicated(const.long$var.name) | duplicated(const.long$var.name,fromLast = TRUE),])
+#view(tmp[order(tmp$var.name),])
+```
+
+Read in univariate analysis file for variables used
+```{r}
+univ <- read_xlsx("Exploratory_analysis_IND.xlsx",sheet='univariate_results_decisions') #this is the sheet where we analyzied and made decisions on variables to be taken to PCA
+f.var <- univ[,1:3]
+names(f.var) <- c('var.name','var.type','f.var.name')
+f.var <- f.var[-c(1, 2), ]
+#view(f.var)
+```
+
+Double check no intended to be used variable names are missing
+```{r}
+# Check if unique 'var.name' values are the same in both data tables
+unique_f_var <- unique(f.var$var.name)
+unique_const_long <- unique(const.long$var.name)
+
+# Check if they are the same
+if (identical(unique_f_var, unique_const_long)) {
+  cat("The unique 'var.name' values in both data tables are the same.\n")
+} else {
+  cat("The unique 'var.name' values are different between the data tables.\n")
+
+  # Find which values are in unique_f_var but not in unique_const_long
+  missing_in_const_long <- setdiff(unique_f_var, unique_const_long)
+
+  # Find which values are in unique_const_long but not in unique_f_var
+  missing_in_f_var <- setdiff(unique_const_long, unique_f_var)
+
+  cat("Values missing in const.long:\n", missing_in_const_long, "\n")
+  cat("Values missing in f.var:\n", missing_in_f_var, "\n")
+}
+
+#The unique 'var.name' values are different between the data tables. Values missing in const.long:iron, num.child.die.cat, num.child.die.yn. This is because these 3 are removed after 1st round of exploratory (num.child.die.cat, num.child.die.yn are actually outcome). Okay to proceed.
+```
+
+```{r}
+f.var <- f.var[!grepl("///|//",f.var$f.var.name) & !is.na(f.var$f.var.name),]
+#view(f.var) #86
+```
+
+Merge with construct mapping
+```{r}
+c_map <- left_join(f.var,const.long,by='var.name')
+length(unique(c_map$var.name))  ## extra rows are from repeating different constructs
+length(c_map$var.name) #98 for 86 unique f.var.name
+c_map <- c_map[order(c_map$category),]
+
+write_xlsx(x = c_map,path = "7_Construct_mapping.xlsx") 
+```
+

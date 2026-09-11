@@ -1,0 +1,84 @@
+---
+title: "Women with children"
+author: "Lang Gao"
+date: "2024-02-27"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '6'
+  word_document:
+    toc: yes
+    toc_depth: '6'
+  pdf_document:
+    toc: yes
+    toc_depth: '6'
+---
+
+<style type="text/css">
+
+h1.title {
+  font-size: 21px;
+  color: Blue;
+  text-align: center;
+}
+h4.author { /* Header 4 - and the author and data headers use this too  */
+    font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+h4.date { /* Header 4 - and the author and data headers use this too  */
+  font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+</style>
+
+</br>
+
+
+---
+
+#######################################
+1. Setting up the script
+#######################################
+
+
+Set up filepath, notation and packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(scipen = 100, digits = 4)
+
+#Set filepath
+setwd("/Users/langgao/Downloads/Freelancer projects/Sonder/Indonesia/Segmentation")
+```
+
+Load packages
+```{r,echo=FALSE}
+rm(list=ls())
+pacman::p_load("foreign","tidyverse","readxl","ggplot2","ggalluvial","ggrepel","gridExtra","cowplot","survey","dplyr","scales","RColorBrewer","networkD3","haven","corrplot","forcats","vtable","srvyr","readr","vtable","data.table","kableExtra")
+```
+
+##############################################
+2. Data Preparation
+##############################################
+Read in original data
+```{r}
+dhs.seg <- readRDS("5_Indonesia_DHS_exploratory.rds")
+
+#dim(dhs.seg) #49627   311
+
+#dhs.seg$v201
+#summary(dhs.seg$v201)
+#table(dhs.seg$v201)
+
+dhs.seg.wmchild <- dhs.seg %>% 
+  filter(v201 > 0)
+
+#dim(dhs.seg.wmchild) #34199   311
+
+saveRDS(dhs.seg.wmchild, file = "Indonesia_DHS_wmchild.rds")
+```
+

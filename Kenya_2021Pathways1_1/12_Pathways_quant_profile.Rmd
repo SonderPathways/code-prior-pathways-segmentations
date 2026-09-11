@@ -1,0 +1,1124 @@
+---
+title: "Kenya_Pathways_segment_profile [Updating]"
+author: "Darcy Rao, adapted from script by Lang Gao"
+date: "2024-10-23"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '6'
+  word_document:
+    toc: yes
+    toc_depth: '6'
+  pdf_document:
+    toc: yes
+    toc_depth: '6'
+---
+
+<style type="text/css">
+
+h1.title {
+  font-size: 21px;
+  color: Blue;
+  text-align: center;
+}
+h4.author { /* Header 4 - and the author and data headers use this too  */
+    font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+h4.date { /* Header 4 - and the author and data headers use this too  */
+  font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+
+</style>
+
+</br>
+
+
+***
+---
+
+```{r setup, include=FALSE}
+#### Set up filepath, notation and packages
+rm(list=ls())
+
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(scipen = 100, digits = 4)
+
+##Load packages
+pacman::p_load( "tidyverse","readxl","ggplot2","ggalluvial","ggrepel","gridExtra","cowplot","survey","dplyr","scales","RColorBrewer",
+                "networkD3", "grid","fastDummies","tidyr",
+                "foreign","haven","corrplot","forcats","vtable","srvyr","readr","vtable","data.table","kableExtra",
+                "rpart", "rpart.plot", "caret", "randomForest", "colorspace", "openxlsx")
+
+##Set filepath
+setwd("/Users/darcyrao/Library/CloudStorage/OneDrive-Bill&MelindaGatesFoundation/Pathways - GE Data & Insights/Modeling/Kenya 2022 DHS/")
+
+## Read in final segmentation solutions
+final_model_urban <- "urban_round6_u5" # list the folder name for the final model run
+final_model_rural <- "rural_round6_u5" # list the folder name for the final model run
+
+kclass_urban <- "cluster_k4" # use the 4-class solution
+kclass_rural <- "cluster_k4" # use the 4-class solution
+
+urban <- readRDS(file.path("Solutions/KE 2022 (women with kids - Final solution)/LCA", final_model_urban,"dhs.seg_reform.rds"))
+urban[, class := as.factor(get(kclass_urban))]
+urban$class <- paste0("U",urban$class)
+
+rural <- readRDS(file.path("Solutions/KE 2022 (women with kids - Final solution)/LCA", final_model_rural, "dhs.seg_reform.rds"))
+rural[, class := as.factor(get(kclass_rural))]
+rural$class <- paste0("R",rural$class)
+
+## Load in original DHS data to pull in other variables and merge with the objects above containing class variables
+vulnerability <- readRDS("Data/Constructed data/4_Kenya_DHS_vulnerability.rds")
+outcomes <- readRDS("Data/Constructed data/1_Kenya_DHS_outcomes.rds")
+dhs.full <- merge(vulnerability, outcomes, by="caseid", all.x=T)
+
+dhs.seg.urban <- urban %>%
+  dplyr::select(caseid, class) %>%
+  left_join(dhs.full, by = "caseid")
+dhs.seg.urban <- as.data.table(dhs.seg.urban)
+
+dhs.seg.rural <- rural %>%
+  dplyr::select(caseid, class) %>%
+  left_join(dhs.full, by = "caseid")
+dhs.seg.rural <- as.data.table(dhs.seg.rural)
+
+ken <- rbind.data.frame(dhs.seg.urban, dhs.seg.rural)
+
+## Pull out the k-class solution and rename the segments based on approximate vulnerability level (eyeballed from plots)
+
+# R1 => R1-K
+# R3 => R2-K
+# R2 => R3-K
+# R4 => R4-K
+
+# U3 => U1-K
+# U4 => U2-K
+# U1 => U3-K
+# U2 => U4-K
+
+ken <- ken %>% 
+  mutate(class = case_when(
+    class == "U3" ~ "U1-K",
+    class == "U4" ~ "U2-K",
+    class == "U1" ~ "U3-K",
+    class == "U2" ~ "U4-K",
+    class == "R1" ~ "R1-K",
+    class == "R3" ~ "R2-K",
+    class == "R2" ~ "R3-K",
+    class == "R4" ~ "R4-K"))
+
+# Save dataset with segments
+saveRDS(ken, file="Data/Constructed data/ken.seg.rds")
+
+##Read in variable mapping excel
+const <- data.table(read.xlsx("Analysis plans and methods documentation/9_Kenya_DHS_construct_mapping_PCA_to_LCA.xlsx",sheet = 'Sheet 1'))
+# Read in variable label from data dictionary
+dict <- data.table(read.xlsx("Analysis plans and methods documentation/0_Kenya_DHS_Data_Dictionary.xlsx",sheet = 'Vulnerabilities_full_list_SS', startRow = 7))
+# Merge with variable mapping
+const <- dict %>% select(variable.label, variable.name) %>%
+  rename(var.name = variable.name) %>%
+  right_join(const, by = "var.name") %>%
+  mutate(variable.label = if_else(var.name == "hh.fin.assist.yn", "Life in the community and support", variable.label)) # hard code label for hh.fin.assist.yn to be life in the community and support
+
+ 
+# Keep only final LCA vars
+  const <- const[str_detect(tolower(const$urban_currentLCA), "^keep") | str_detect(tolower(const$rural_currentLCA), "^keep")]  
+  const <- const[!duplicated(const$f.var.name),]
+
+  lca.var <- const$f.var.name
+
+subset_var <- const[const$f.var.name %in% lca.var, c("f.var.name", "var.type")]
+bin.var <- subset_var$f.var.name[subset_var$var.type=='binary']
+cat.var <- subset_var$f.var.name[str_detect(subset_var$var.type, 'categorical')]
+
+## Recode some variables to be coded correctly
+tabulated_columns <- lapply(lca.var, function(col) {
+    table(ken[[col]])
+})
+names(tabulated_columns) <- lca.var # Naming the list with the column names for clarity
+tabulated_columns # Print the tabulated results
+
+# yes/no vars to 1/0
+for(var.i in bin.var){
+  
+  if("yes" %in% unique(ken[,get(var.i)])){
+    ken[, (var.i) := as.character(get(var.i))]
+    ken[get(var.i) == "yes", (var.i) := "1"]
+    ken[get(var.i) == "no", (var.i) := "0"]
+  }
+  ken[, (var.i) := as.numeric(get(var.i))]  
+  
+}
+
+# change some numeric variables to apply labels
+ken <- ken %>% mutate(freq.tv = factor(freq.tv, levels = c(0, 1, 2), labels = c("Not at all", "Less than once a week", "At least once a week")))
+
+# Create a former province variable
+#load data mapping county to former province
+county_to_province <- read_excel("Data/kenya_county_to_province.xlsx")
+county_to_province$county <- tolower(county_to_province$county)
+county_to_province$county[county_to_province$county=="taita-taveta"] <- "taita taveta"
+ken$county <- ken$v024
+ken <- ken %>%
+  left_join(county_to_province, by ="county")
+
+# Create an age cat variable
+ken <- ken %>% mutate(age_cat = cut(age.yrs, breaks = c(0, 19, 24, 34, 49), labels = c("15-19", "20-24", "25-34", "35-49")))
+
+## Apply survey weights and define urban/rural strata
+ken_urban <- ken %>% filter(hh.urban == 1)
+ken_rural <- ken %>% filter(hh.urban == 0)
+
+urban.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data = subset(ken, hh.urban == 1))
+rural.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data = subset(ken, hh.urban == 0))
+ken.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=ken)
+
+## Load list of outcomes
+outcomes.df <- data.table(read.xlsx("Analysis plans and methods documentation/0_Kenya_DHS_Data_Dictionary.xlsx",sheet = "Outcomes (updated)"))
+outcomes.df <- outcomes.df[keep == "Keep"]
+outcomes.df <- outcomes.df %>% filter(!(variable.name %in% c("birthwgt.last.cat3")))
+# filter to list of outcomes that are binary
+ken.outcomes <- ken %>% select(outcomes.df$variable.name)
+outcomes <- outcomes.df$variable.name
+outcomes <- outcomes[apply(ken.outcomes,2,function(x) { all(na.omit(x) %in% 0:1) })]
+
+```
+
+## 1. Distribution Overview
+
+### 1.1. Distribution of rural segments
+```{r}
+rural.seg.tab <- svytable(~class, design = rural.des)
+rural.seg.pie <- as.data.frame(rural.seg.tab)
+
+rural.seg.pie <- rural.seg.pie %>%
+  mutate(percent = round((Freq / sum(Freq)) * 100, digits = 0))%>%
+  ungroup() %>%
+  arrange(desc(class)) %>%
+  mutate(cumulative_freq = cumsum(Freq),
+         midpoint = cumulative_freq - (Freq/2))
+
+# Define the color palette
+nseg_rural <- length(unique(ken_rural$class))
+rural_palette <- RColorBrewer::brewer.pal(n=nseg_rural, "BuGn")
+
+ggplot(rural.seg.pie, aes(x = factor(1), fill = class)) + 
+  geom_bar(aes(weight = Freq), width = 1) +
+  coord_polar(theta = "y") + 
+  geom_text(aes(y = midpoint, label = paste0(round(percent, 1), "%")), color = "black", size = 3.5) + 
+  scale_fill_manual(values = rural_palette) +
+  labs(x = NULL, y = NULL, fill = "Segment") +
+  theme_void() +
+  ggtitle("Distribution of Rural Segments [Weight Adjusted]")
+
+rural.seg.pie
+```
+
+### 1.2. Distribution of urban segment
+```{r}
+urban.seg.tab <- svytable(~class, design = urban.des)
+urban.seg.pie <- as.data.frame(urban.seg.tab)
+
+urban.seg.pie <- urban.seg.pie %>%
+  mutate(percent = round((Freq / sum(Freq)) * 100, digits = 0))%>%
+  ungroup() %>%
+  arrange(desc(class)) %>%
+  mutate(cumulative_freq = cumsum(Freq),
+         midpoint = cumulative_freq - (Freq/2))
+
+# Define the color palette
+nseg_urban <- length(unique(ken_urban$class))
+urban_palette <- darken(RColorBrewer::brewer.pal(n=nseg_urban, "PuRd"))
+
+ggplot(urban.seg.pie, aes(x = factor(1), fill = class)) + 
+  geom_bar(aes(weight = Freq), width = 1) +
+  coord_polar(theta = "y") + 
+  geom_text(aes(y = midpoint, label = paste0(round(percent, 1), "%")), color = "black", size = 3.5) + 
+  scale_fill_manual(values = urban_palette) +
+  labs(x = NULL, y = NULL, fill = "Segment") +
+  theme_void() +
+  ggtitle("Distribution of Urban Segments [Weight Adjusted]")
+
+urban.seg.pie
+```
+### 1.3. Distribution at the national level
+```{r}
+seg.tab <- svytable(~class, design = ken.des)
+seg.pie <- as.data.frame(seg.tab)
+
+seg.pie <- seg.pie %>%
+  mutate(percent = round((Freq / sum(Freq)) * 100, digits = 0),
+         type = ifelse(substr(class, 1, 1) == "R", "Rural", "Urban"))%>%
+  ungroup() %>%
+  arrange(desc(class)) %>%
+  mutate(cumulative_freq = cumsum(Freq),
+         midpoint = cumulative_freq - (Freq/2))
+
+# Color palette
+comb_palette <- c(rural_palette, urban_palette)
+#seg.pie$class <- factor(seg.pie$class, levels = c("R3.1-S", "R3.2-S", "R2-S", "R4-S", "U2.1-S", "U3.1-S", "U3.2-S", "U1-S", "U2.2-S"))
+seg_colors <- setNames(comb_palette, levels(seg.pie$class))
+
+# Calculate the label positions
+seg.pie <- seg.pie %>%
+  arrange(desc(class)) %>%
+  mutate(midpoint = cumsum(Freq) - 0.5 * Freq)
+
+ggplot(seg.pie, aes(x = factor(1), fill = class)) + 
+  geom_bar(aes(weight = Freq), width = 1) +
+  coord_polar(theta = "y") + 
+  geom_text(aes(y = midpoint, label = paste0(round(percent, 1), "%")), color = "black", size = 3.5) + 
+  scale_fill_manual(values = seg_colors) +
+  labs(x = NULL, y = NULL, fill = "Segment") +
+  theme_void() +
+  ggtitle("Distribution of Kenya Segments [Weight Adjusted]")
+
+seg.pie
+```
+
+### 1.4. Geographic distribution
+Note that 60% of women in the smallest segment (U4) reside in the former North Eastern Province, which they make up 31% of. The next smallest segment is R4, of whom 47% reside in Rift Valley, making up 11% of women with kids under 5 in that former province, while 20% reside in North Eastern, making up 50% of women in that former province.
+```{r}
+
+#table(ken$former_province)
+seg.region <- svytable(~class + former_province, design = ken.des)
+seg.region <- as.data.frame(seg.region)
+
+seg.region1 <- seg.region %>%
+  group_by(former_province) %>% 
+  mutate(perc = round((Freq / sum(Freq)) * 100, digits = 0)) %>% 
+  ungroup()
+
+ggplot(seg.region1, aes(x = former_province, y = perc, fill = class)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.5) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 3.5) +
+  labs(x = "Former province", y = "Percentage", fill = "Segment", title = "Segment Distribution within Province") +
+  scale_fill_brewer(palette = "Dark2") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
+
+seg.region1
+
+seg.region2 <- seg.region %>%
+  group_by(class) %>% 
+  mutate(perc = round((Freq / sum(Freq)) * 100, digits = 0)) %>% 
+  ungroup()
+
+ggplot(seg.region2, aes(x = class, y = perc, fill = former_province)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.5) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 3.5) +
+  labs(x = "Former province", y = "Percentage", fill = "Segment", title = "Geographic Distribution within Segment") +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
+
+seg.region2
+```
+#### 1.4.1. By County
+By county, women in U4 are concentrated in Wajir, Tana River, Mandera, Isiolo, and Garissa.
+```{r, fig.width=12, fig.height= 15}
+seg.county <- svytable(~class + county, design = ken.des)
+seg.county <- as.data.frame(seg.county)
+
+seg.county1 <- seg.county %>%
+  group_by(county) %>% 
+  mutate(perc = round((Freq / sum(Freq)) * 100, digits = 2)) %>% 
+  ungroup()
+
+ggplot(seg.county1, aes(x = county, y = perc, fill = class)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.5) +
+  geom_text(aes(label = paste0(round(perc, 0), "%")), position = position_stack(vjust = 0.5), size = 3.5) +
+  labs(x = "Province", y = "Percentage", fill = "Segment", title = "Segment Distribution within county") +
+  coord_flip() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 0.5))
+
+```
+
+### 1.5. Age distribution
+```{r}
+#table(NN$age.adj, NN$class)
+
+seg.age <- svytable(~class + age_cat, design = ken.des)
+seg.age <- as.data.frame(seg.age)
+
+seg.age <- seg.age %>%
+  group_by(class) %>% 
+  mutate(perc = round((Freq / sum(Freq)) * 100, digits = 0)) %>% 
+  ungroup()
+
+ggplot(seg.age, aes(x = class, y = perc, fill = age_cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.5) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 3.5) +
+  labs(x = "Age group", y = "Percentage", fill = "Segment", title = "Age Distribution within Segment") +
+  scale_fill_manual(values = c("#9cc2f4", "#386CB0", "#03859b", "#b590bf")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
+
+seg.age
+```
+
+## 2. Means of outcomes by segment
+### 2.1. Overall profiles
+```{r, echo=FALSE}
+## Means by segment
+# Initialize an empty list to store results
+results_list <- list()
+
+# Loop through each variable in outcomes.list and calculate weighted means
+for (var in outcomes) {
+  # Use svyby to calculate the mean of each outcome by 'class'
+  result <- svyby(formula = as.formula(paste0("~", var)),
+                  by = ~class, 
+                  design = ken.des, 
+                  FUN = svymean, 
+                  na.rm = TRUE)
+  
+  # Store the result in the list and name it after the variable
+  results_list[[var]] <- result
+}
+
+# Combine the results from the list into a single data frame
+cluster_means_outcomes <- as.data.frame(do.call(cbind, lapply(results_list, function(x) x[, 2])))  # Extract means
+cluster_means_outcomes$class <- results_list[[1]]$class
+
+# Pivot to longer
+cluster_means_outcomes <- cluster_means_outcomes %>%
+  pivot_longer(cols = c(outcomes), names_to = "outcome", values_to = "cluster_mean")
+
+## overall means
+# Initialize an empty list to store results
+means_outcomes_overall <- cbind.data.frame(outcome = outcomes, overall_mean = NA)
+
+# Loop through each variable in outcomes.list and calculate weighted means
+for (var in outcomes) {
+  # Use mean to calculate the mean of each outcome by 'class'
+  result <- svymean(x = as.formula(paste0("~", var)),
+                  design = ken.des, 
+                  na.rm = TRUE)
+  result <- as.vector(result[1])
+  
+  # Store the result in the list and name it after the variable
+  means_outcomes_overall$overall_mean[means_outcomes_overall$outcome == var] <- result
+}
+
+# Merge the two datasets
+outcomes_means <- left_join(cluster_means_outcomes, means_outcomes_overall, by = "outcome")
+
+# Calculate the differences between cluster and ovearll means and percent differences
+outcomes_means <- outcomes_means %>%
+  mutate(difference = cluster_mean - overall_mean,
+    percent_difference = (difference / overall_mean))
+
+# Merge in category from the outcomes sheet
+outcomes_means_cat <- outcomes.df %>% dplyr::select(Category, variable.name) %>%
+    group_by(variable.name) %>%
+    rename(outcome = variable.name) %>%
+    right_join(outcomes_means, by = "outcome") %>%
+    ungroup() 
+
+# define class as a factor
+outcomes_means_cat$class <- factor(outcomes_means_cat$class)
+
+```
+
+#### 2.1.1. Rural
+```{r, echo = F, fig.width=10, fig.height=10}
+#plot_data
+outcomes_means_cat %>%
+  filter(grepl("^R", class)) %>%
+ggplot(aes(x = outcome, y = difference, color = factor(class), group = factor(class))) +
+  geom_point() +
+  geom_line() +
+  scale_color_manual(values = darken(comb_palette[c(1:4)])) +
+  facet_wrap(~Category, scales = "free_x") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+        strip.text.x = element_text(size = 10, face = "bold")) +
+  labs(title = "Outcome Profiles (Rural)",
+       y = "Percent difference from the sample mean",
+       x = NULL)
+
+```
+
+#### 2.1.2. Urban
+```{r, echo = F, fig.width=10, fig.height = 10}
+#plot_data
+outcomes_means_cat %>%
+  filter(grepl("^U", class)) %>%
+ggplot(aes(x = outcome, y = difference, color = factor(class), group = factor(class))) +
+  geom_point() +
+  geom_line() +
+  scale_color_manual(values = darken(comb_palette[c(5:8)])) +
+  facet_wrap(~Category, scales = "free_x") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+        strip.text.x = element_text(size = 10, face = "bold")) +
+  labs(title = "Outcome Profiles (Urban)",
+       y = "Percent difference from the sample mean",
+       x = NULL) 
+
+```
+
+### 2.2. Outcomes by segment
+#### 2.2.1 Reproductive and sexual health
+```{r}
+
+rsh.outcomes <- outcomes.df %>% 
+  dplyr::select(Category, variable.name, label) %>%
+  filter(Category =="Reproductive and sexual health") %>%
+  select(variable.name, label) %>%
+  rename(outcome = variable.name)
+
+results <- list()
+
+for (outcome in rsh.outcomes$outcome) {
+  outcome_table <- svytable(~class + get(outcome), design = ken.des)
+  outcome_df <- as.data.frame(outcome_table)
+  
+  outcome_df <- outcome_df %>%
+    group_by(class) %>%
+    mutate(perc = round((Freq / sum(Freq)) * 100, digits = 0)) %>%
+    ungroup()
+  
+  outcome_df$outcome <- outcome
+  results[[outcome]] <- outcome_df
+}
+
+# Combine all results into a single data frame
+prop.rsh.outcomes <- bind_rows(results)
+
+# Merge in label
+prop.rsh.outcomes <- prop.rsh.outcomes %>%
+  left_join(rsh.outcomes, by = "outcome")
+
+# Change 0/1 to yes/no
+prop.rsh.outcomes <- prop.rsh.outcomes %>%
+  rename(value = get.outcome.) %>%
+  mutate(value = case_when(
+    value == 0 ~ "No",
+    value == 1 ~ "Yes"
+  )) 
+
+rsh.outcomes.plotlist <- list()
+for(out in rsh.outcomes$label){
+rsh.outcomes.plotlist[[out]] <- prop.rsh.outcomes %>%
+    filter(label == out) %>%
+    ggplot(aes(x = class, y = perc, fill = value)) +
+    geom_bar(stat = "identity", position = "stack", width = 0.7) +
+    geom_text(aes(label = paste0(round(perc, 0), "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+    labs(x = "Segment", y = "Percentage", title = out) +
+    scale_fill_manual(values = c("#b4adaa","#03859b")) +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.title = element_text(size = 9), 
+        legend.text = element_text(size = 7))
+}
+  rsh.outcomes.plotlist
+  
+  
+```
+
+#### 2.2.2 Pregnancy and postpartum behavior
+```{r}
+
+preg.post.outcomes <- outcomes.df %>% 
+  dplyr::select(Category, variable.name, label) %>%
+  filter(Category =="Pregnancy and postpartum behavior") %>%
+  select(variable.name, label) %>%
+  rename(outcome = variable.name)
+
+results <- list()
+
+for (outcome in preg.post.outcomes$outcome) {
+  outcome_table <- svytable(~class + get(outcome), design = ken.des)
+  outcome_df <- as.data.frame(outcome_table)
+  
+  outcome_df <- outcome_df %>%
+    group_by(class) %>%
+    mutate(perc = round((Freq / sum(Freq)) * 100, digits = 0)) %>%
+    ungroup()
+  
+  outcome_df$outcome <- outcome
+  results[[outcome]] <- outcome_df
+}
+
+# Combine all results into a single data frame
+prop.preg.post.outcomes <- bind_rows(results)
+
+# Merge in label
+prop.preg.post.outcomes <- prop.preg.post.outcomes %>%
+  left_join(preg.post.outcomes, by = "outcome")
+
+# Change 0/1 to yes/no
+prop.preg.post.outcomes <- prop.preg.post.outcomes %>%
+  rename(value = get.outcome.) %>%
+  mutate(value = case_when(
+    value == 0 ~ "No",
+    value == 1 ~ "Yes"
+  )) 
+
+preg.post.outcomes.plotlist <- list()
+for(out in preg.post.outcomes$label){
+preg.post.outcomes.plotlist[[out]] <- prop.preg.post.outcomes %>%
+    filter(label == out) %>%
+    ggplot(aes(x = class, y = perc, fill = value)) +
+    geom_bar(stat = "identity", position = "stack", width = 0.7) +
+    geom_text(aes(label = paste0(round(perc, 0), "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+    labs(x = "Segment", y = "Percentage", title = out) +
+    scale_fill_manual(values = c("#b4adaa","#03859b")) +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.title = element_text(size = 9), 
+        legend.text = element_text(size = 7))
+}
+  preg.post.outcomes.plotlist
+  
+  
+```
+#### 2.2.3 Child care behavior
+```{r}
+
+child.care.outcomes <- outcomes.df %>% 
+  dplyr::select(Category, variable.name, label) %>%
+  filter(Category =="Child care behavior") %>%
+  select(variable.name, label) %>%
+  rename(outcome = variable.name)
+
+results <- list()
+
+for (outcome in child.care.outcomes$outcome) {
+  outcome_table <- svytable(~class + get(outcome), design = ken.des)
+  outcome_df <- as.data.frame(outcome_table)
+  
+  outcome_df <- outcome_df %>%
+    group_by(class) %>%
+    mutate(perc = round((Freq / sum(Freq)) * 100, digits = 0)) %>%
+    ungroup()
+  
+  outcome_df$outcome <- outcome
+  results[[outcome]] <- outcome_df
+}
+
+# Combine all results into a single data frame
+prop.child.care.outcomes <- bind_rows(results)
+
+# Merge in label
+prop.child.care.outcomes <- prop.child.care.outcomes %>%
+  left_join(child.care.outcomes, by = "outcome")
+
+# Change 0/1 to yes/no
+prop.child.care.outcomes <- prop.child.care.outcomes %>%
+  rename(value = get.outcome.) %>%
+  mutate(value = case_when(
+    value == 0 ~ "No",
+    value == 1 ~ "Yes"
+  )) 
+
+child.care.outcomes.plotlist <- list()
+for(out in child.care.outcomes$label){
+child.care.outcomes.plotlist[[out]] <- prop.child.care.outcomes %>%
+    filter(label == out) %>%
+    ggplot(aes(x = class, y = perc, fill = value)) +
+    geom_bar(stat = "identity", position = "stack", width = 0.7) +
+    geom_text(aes(label = paste0(round(perc, 0), "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+    labs(x = "Segment", y = "Percentage", title = out) +
+    scale_fill_manual(values = c("#b4adaa","#03859b")) +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.title = element_text(size = 9), 
+        legend.text = element_text(size = 7))
+}
+  child.care.outcomes.plotlist
+  
+  
+```
+#### 2.2.4 Child Health Outcomes
+```{r}
+
+child.outcomes <- outcomes.df %>% 
+  dplyr::select(Category, variable.name, label) %>%
+  filter(Category =="Child health outcomes") %>%
+  select(variable.name, label) %>%
+  rename(outcome = variable.name)
+
+results <- list()
+
+for (outcome in child.outcomes$outcome) {
+  outcome_table <- svytable(~class + get(outcome), design = ken.des)
+  outcome_df <- as.data.frame(outcome_table)
+  
+  outcome_df <- outcome_df %>%
+    group_by(class) %>%
+    mutate(perc = round((Freq / sum(Freq)) * 100, digits = 0)) %>%
+    ungroup()
+  
+  outcome_df$outcome <- outcome
+  results[[outcome]] <- outcome_df
+}
+
+# Combine all results into a single data frame
+prop.child.outcomes <- bind_rows(results)
+
+# Merge in label
+prop.child.outcomes <- prop.child.outcomes %>%
+  left_join(child.outcomes, by = "outcome")
+
+# Change 0/1 to yes/no
+prop.child.outcomes <- prop.child.outcomes %>%
+  rename(value = get.outcome.) %>%
+  mutate(value = case_when(
+    value == 0 ~ "No",
+    value == 1 ~ "Yes"
+  )) 
+
+child.outcomes.plotlist <- list()
+for(out in child.outcomes$label){
+child.outcomes.plotlist[[out]] <- prop.child.outcomes %>%
+    filter(label == out) %>%
+    ggplot(aes(x = class, y = perc, fill = value)) +
+    geom_bar(stat = "identity", position = "stack", width = 0.7) +
+    geom_text(aes(label = paste0(round(perc, 0), "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+    labs(x = "Segment", y = "Percentage", title = out) +
+    scale_fill_manual(values = c("#b4adaa","#03859b")) +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.title = element_text(size = 9), 
+        legend.text = element_text(size = 7))
+}
+  child.outcomes.plotlist
+  
+  
+```
+
+#### 2.2.5 Women's health outcomes
+```{r}
+
+wom.health.outcomes <- outcomes.df %>% 
+  dplyr::select(Category, variable.name, label) %>%
+  filter(Category =="Women's health outcomes") %>%
+  select(variable.name, label) %>%
+  rename(outcome = variable.name)
+
+results <- list()
+
+for (outcome in wom.health.outcomes$outcome) {
+  outcome_table <- svytable(~class + get(outcome), design = ken.des)
+  outcome_df <- as.data.frame(outcome_table)
+  
+  outcome_df <- outcome_df %>%
+    group_by(class) %>%
+    mutate(perc = round((Freq / sum(Freq)) * 100, digits = 0)) %>%
+    ungroup()
+  
+  outcome_df$outcome <- outcome
+  results[[outcome]] <- outcome_df
+}
+
+# Combine all results into a single data frame
+prop.wom.health.outcomes <- bind_rows(results)
+
+# Merge in label
+prop.wom.health.outcomes <- prop.wom.health.outcomes %>%
+  left_join(wom.health.outcomes, by = "outcome")
+
+# Change 0/1 to yes/no
+prop.wom.health.outcomes <- prop.wom.health.outcomes %>%
+  rename(value = get.outcome.) %>%
+  mutate(value = case_when(
+    value == 0 ~ "No",
+    value == 1 ~ "Yes"
+  )) 
+
+wom.health.outcomes.plotlist <- list()
+for(out in wom.health.outcomes$label){
+wom.health.outcomes.plotlist[[out]] <- prop.wom.health.outcomes %>%
+    filter(label == out) %>%
+    ggplot(aes(x = class, y = perc, fill = value)) +
+    geom_bar(stat = "identity", position = "stack", width = 0.7) +
+    geom_text(aes(label = paste0(round(perc, 0), "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+    labs(x = "Segment", y = "Percentage", title = out) +
+    scale_fill_manual(values = c("#b4adaa","#03859b")) +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.title = element_text(size = 9), 
+        legend.text = element_text(size = 7))
+}
+  wom.health.outcomes.plotlist
+  
+  
+```
+
+## 3. Vulnerability factors
+
+### 3.1. Binary heatmap
+Note that variables are not all "oriented" the same way, so a higher proportion for some is protective, while for others signals increased vulnerability.
+```{r, echo = F, fig.height=10}
+
+results <- list()
+
+for (var in bin.var) {
+  vuln_table <- svyby(~get(var), ~class, design = ken.des, svymean, na.rm = T)
+  vuln_df <- as.data.frame(vuln_table)
+  
+  vuln_df$variable <- var
+  results[[var]] <- vuln_df
+}
+
+# Combine all results into a single data frame
+prop.binvar <- bind_rows(results)
+
+# Merge in domain
+const.merge <- const %>% select(category, var.name) %>%
+  rename(variable = var.name)
+prop.binvar <- prop.binvar %>%
+  rename(mean = "get(var)") %>%
+  left_join(const.merge, by = "variable") %>%
+  select(class, mean, variable, category)
+  
+# Plot
+  heatmap <- ggplot(prop.binvar, aes(x = factor(class), y = variable, fill = mean)) +
+    geom_tile() +
+  facet_grid(rows = vars(category), scales = "free_y", space = "free_y", switch = "y") +
+    # facet_wrap(~category, scales = "free_y", ncol =) + 
+  scale_fill_gradient2(low = "#313695", mid = "#FFFFBF", high = "#A50026", midpoint = 0.5, breaks = seq(0, 1, 0.1)) +
+  labs(title = '', x = '', y = '', fill = 'Proportion within\ncluster') +
+  theme_minimal() +
+  theme(legend.text = element_text(size = 5),
+        legend.title = element_text(size = 5),
+        axis.text = element_text(size = 6),
+        strip.background = element_blank(),
+        strip.placement = "outside",
+        strip.text.y = element_text(angle = 90, size = 5),
+        panel.spacing.y = unit(0.8, "lines")) 
+    
+heatmap
+```
+
+### 3.2. Individual vulnerability factors by segment
+
+#### 3.2.1. Woman and her past experiences
+```{r}
+
+wom.experiences <- const %>% 
+  dplyr::select(category, var.name, variable.label) %>%
+  filter(category =="Woman and her past experiences") %>%
+  select(var.name, variable.label)
+
+results <- list()
+
+for (vuln in wom.experiences$var.name) {
+  vuln_table <- svytable(~class + get(vuln), design = ken.des)
+  vuln_df <- as.data.frame(vuln_table)
+
+  vuln_df <- vuln_df %>%
+    group_by(class) %>%
+    mutate(perc = round((Freq / sum(Freq)) * 100, digits = 0)) %>%
+    ungroup()
+  
+  vuln_df$var.name <- vuln
+  results[[vuln]] <- vuln_df
+}
+
+# Combine all results into a single data frame
+prop.wom.experiences <- bind_rows(results)
+
+# Merge in label
+prop.wom.experiences <- prop.wom.experiences %>%
+  left_join(wom.experiences, by = "var.name") %>%
+  rename(value = get.vuln.)
+
+
+wom.experiences.plotlist <- list()
+for(vuln in wom.experiences$variable.label){
+wom.experiences.plotlist[[vuln]] <- prop.wom.experiences %>%
+    filter(variable.label == vuln) %>%
+    ggplot(aes(x = class, y = perc, fill = value)) +
+    geom_bar(stat = "identity", position = "stack", width = 0.7) +
+    geom_text(aes(label = paste0(round(perc, 0), "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+    labs(x = "Segment", y = "Percentage", title = vuln) +
+    scale_fill_brewer(type = "div", palette = 3, direction = -1) + 
+    theme_minimal() +
+    theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.title = element_text(size = 9), 
+        legend.text = element_text(size = 7))
+}
+  wom.experiences.plotlist
+  
+  
+```
+
+#### 3.2.2. Household relationships
+```{r}
+
+household.relships <- const %>% 
+  dplyr::select(category, var.name, variable.label) %>%
+  filter(category =="Household relationships") %>%
+  select(var.name, variable.label)
+
+results <- list()
+
+for (vuln in household.relships$var.name) {
+  vuln_table <- svytable(~class + get(vuln), design = ken.des)
+  vuln_df <- as.data.frame(vuln_table)
+
+  vuln_df <- vuln_df %>%
+    group_by(class) %>%
+    mutate(perc = round((Freq / sum(Freq)) * 100, digits = 0)) %>%
+    ungroup()
+  
+  vuln_df$var.name <- vuln
+  results[[vuln]] <- vuln_df
+}
+
+# Combine all results into a single data frame
+prop.household.relships <- bind_rows(results)
+
+# Merge in label
+prop.household.relships <- prop.household.relships %>%
+  left_join(household.relships, by = "var.name") %>%
+  rename(value = get.vuln.)
+
+
+household.relships.plotlist <- list()
+for(vuln in household.relships$variable.label){
+household.relships.plotlist[[vuln]] <- prop.household.relships %>%
+    filter(variable.label == vuln) %>%
+    ggplot(aes(x = class, y = perc, fill = value)) +
+    geom_bar(stat = "identity", position = "stack", width = 0.7) +
+    geom_text(aes(label = paste0(round(perc, 0), "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+    labs(x = "Segment", y = "Percentage", title = vuln) +
+    scale_fill_brewer(type = "div", palette = 3, direction = -1) + 
+    theme_minimal() +
+    theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.title = element_text(size = 9), 
+        legend.text = element_text(size = 7))
+}
+  household.relships.plotlist
+  
+  
+```
+
+#### 3.2.3. Household economics
+```{r}
+
+household.economics <- const %>% 
+  dplyr::select(category, var.name, variable.label) %>%
+  filter(category =="Household economics") %>%
+  select(var.name, variable.label)
+
+results <- list()
+
+for (vuln in household.economics$var.name) {
+  vuln_table <- svytable(~class + get(vuln), design = ken.des)
+  vuln_df <- as.data.frame(vuln_table)
+
+  vuln_df <- vuln_df %>%
+    group_by(class) %>%
+    mutate(perc = round((Freq / sum(Freq)) * 100, digits = 0)) %>%
+    ungroup()
+  
+  vuln_df$var.name <- vuln
+  results[[vuln]] <- vuln_df
+}
+
+# Combine all results into a single data frame
+prop.household.economics <- bind_rows(results)
+
+# Merge in label
+prop.household.economics <- prop.household.economics %>%
+  left_join(household.economics, by = "var.name") %>%
+  rename(value = get.vuln.)
+
+
+household.economics.plotlist <- list()
+for(vuln in household.economics$variable.label){
+household.economics.plotlist[[vuln]] <- prop.household.economics %>%
+    filter(variable.label == vuln) %>%
+    ggplot(aes(x = class, y = perc, fill = value)) +
+    geom_bar(stat = "identity", position = "stack", width = 0.7) +
+    geom_text(aes(label = paste0(round(perc, 0), "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+    labs(x = "Segment", y = "Percentage", title = vuln) +
+    scale_fill_brewer(type = "div", palette = 3, direction = -1) + 
+    theme_minimal() +
+    theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.title = element_text(size = 9), 
+        legend.text = element_text(size = 7))
+}
+  household.economics.plotlist
+  
+  
+```
+
+
+#### 3.2.4. Healthcare and mental models
+```{r}
+
+health.mental.models <- const %>% 
+  dplyr::select(category, var.name, variable.label) %>%
+  filter(category =="Healthcare and mental models") %>%
+  select(var.name, variable.label)
+
+results <- list()
+
+for (vuln in health.mental.models$var.name) {
+  vuln_table <- svytable(~class + get(vuln), design = ken.des)
+  vuln_df <- as.data.frame(vuln_table)
+
+  vuln_df <- vuln_df %>%
+    group_by(class) %>%
+    mutate(perc = round((Freq / sum(Freq)) * 100, digits = 0)) %>%
+    ungroup()
+  
+  vuln_df$var.name <- vuln
+  results[[vuln]] <- vuln_df
+}
+
+# Combine all results into a single data frame
+prop.health.mental.models <- bind_rows(results)
+
+# Merge in label
+prop.health.mental.models <- prop.health.mental.models %>%
+  left_join(health.mental.models, by = "var.name") %>%
+  rename(value = get.vuln.)
+
+
+health.mental.models.plotlist <- list()
+for(vuln in health.mental.models$variable.label){
+health.mental.models.plotlist[[vuln]] <- prop.health.mental.models %>%
+    filter(variable.label == vuln) %>%
+    ggplot(aes(x = class, y = perc, fill = value)) +
+    geom_bar(stat = "identity", position = "stack", width = 0.7) +
+    geom_text(aes(label = paste0(round(perc, 0), "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+    labs(x = "Segment", y = "Percentage", title = vuln) +
+    scale_fill_brewer(type = "div", palette = 3, direction = -1) + 
+    theme_minimal() +
+    theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.title = element_text(size = 9), 
+        legend.text = element_text(size = 7))
+}
+  health.mental.models.plotlist
+  
+  
+```
+
+#### 3.2.5. Life in the community and support
+```{r}
+
+support <- const %>% 
+  dplyr::select(category, var.name, variable.label) %>%
+  filter(category =="Life in the community and support") %>%
+  select(var.name, variable.label)
+
+results <- list()
+
+for (vuln in support$var.name) {
+  vuln_table <- svytable(~class + get(vuln), design = ken.des)
+  vuln_df <- as.data.frame(vuln_table)
+
+  vuln_df <- vuln_df %>%
+    group_by(class) %>%
+    mutate(perc = round((Freq / sum(Freq)) * 100, digits = 0)) %>%
+    ungroup()
+  
+  vuln_df$var.name <- vuln
+  results[[vuln]] <- vuln_df
+}
+
+# Combine all results into a single data frame
+prop.support <- bind_rows(results)
+
+# Merge in label
+prop.support <- prop.support %>%
+  left_join(support, by = "var.name") %>%
+  rename(value = get.vuln.)
+
+
+support.plotlist <- list()
+for(vuln in support$variable.label){
+support.plotlist[[vuln]] <- prop.support %>%
+    filter(variable.label == vuln) %>%
+    ggplot(aes(x = class, y = perc, fill = value)) +
+    geom_bar(stat = "identity", position = "stack", width = 0.7) +
+    geom_text(aes(label = paste0(round(perc, 0), "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+    labs(x = "Segment", y = "Percentage", title = vuln) +
+    scale_fill_brewer(type = "div", palette = 3, direction = -1) + 
+    theme_minimal() +
+    theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.title = element_text(size = 9), 
+        legend.text = element_text(size = 7))
+}
+  support.plotlist
+  
+  
+```
+
+#### 3.2.6. Natural and human systems
+```{r}
+
+nat.systems <- const %>% 
+  dplyr::select(category, var.name, variable.label) %>%
+  filter(category =="Natural and human systems") %>%
+  select(var.name, variable.label)
+
+results <- list()
+
+for (vuln in nat.systems$var.name) {
+  vuln_table <- svytable(~class + get(vuln), design = ken.des)
+  vuln_df <- as.data.frame(vuln_table)
+
+  vuln_df <- vuln_df %>%
+    group_by(class) %>%
+    mutate(perc = round((Freq / sum(Freq)) * 100, digits = 0)) %>%
+    ungroup()
+  
+  vuln_df$var.name <- vuln
+  results[[vuln]] <- vuln_df
+}
+
+# Combine all results into a single data frame
+prop.nat.systems <- bind_rows(results)
+
+# Merge in label
+prop.nat.systems <- prop.nat.systems %>%
+  left_join(nat.systems, by = "var.name") %>%
+  rename(value = get.vuln.)
+
+
+nat.systems.plotlist <- list()
+for(vuln in nat.systems$variable.label){
+nat.systems.plotlist[[vuln]] <- prop.nat.systems %>%
+    filter(variable.label == vuln) %>%
+    ggplot(aes(x = class, y = perc, fill = value)) +
+    geom_bar(stat = "identity", position = "stack", width = 0.7) +
+    geom_text(aes(label = paste0(round(perc, 0), "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+    labs(x = "Segment", y = "Percentage", title = vuln) +
+    scale_fill_brewer(type = "div", palette = 3, direction = -1) + 
+    theme_minimal() +
+    theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.title = element_text(size = 9), 
+        legend.text = element_text(size = 7))
+}
+  nat.systems.plotlist
+  
+```
+
+
+
+

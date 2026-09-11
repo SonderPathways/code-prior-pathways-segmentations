@@ -1,0 +1,65 @@
+
+
+########################
+## DEFINE CONFIG SCHEMA
+default:
+
+  ## PROJECT DETAILS AND FILE PATH ROOTS
+  project_name: "South_Nigeria_2024DHS8_1.0"
+  survey_name: "NG8ADT"
+  root_path: "./"
+  user_path: "output/"
+
+
+  ## SURVEY PARAMETERS
+  dhs_ir_file: "NGIR8ADT/NGIR8AFL.DTA"
+  dhs_hh_file: "NGHR8ADT/NGHR8AFL.DTA"
+  dhs_br_file: "NGBR8ADT/NGBR8AFL.DTA"
+  dhs_kr_file: "NGKR8ADT/NGKR8AFL.DTA"
+  dhs_mr_file: "NGMR8ADT/NGMR8AFL.DTA"
+  dhs_pr_file: "NGPR8ADT/NGPR8AFL.DTA"
+  survey_file: ""
+
+
+  ## PATHWAYS WORKBOOK PARAMETERS
+
+  # WHEN = FALSE, EXISTING WORKBOOOK WILL BE IMPORTED IN 1_setup.R SCRIPT
+  # WHEN = TRUE, A NEW PATHWAYS WORKBOOK WILL BE CREATED IN THE 2_data_cleaning.R SCRIPT
+  create_new_pathways_workbook: FALSE
+  # WHEN = FALSE, PATHWAYS WORKBOOK WILL BE CREATED IN CSV FORMAT
+  # WHEN = TRUE, PATHWAYS WORKBOOK WILL BE CREATED IN XLSX FORMAT
+  pathways_workbook_is_excel: TRUE
+
+  # DEFINE NAME FOR EXISTING PATHWAYS WORKBOOK
+  # DEFINE NAME FOR NEW PATHWAYS WORKBOOK
+  pathways_workbook_name: "pathways workbook - South_Nigeria_2024DHS8_1.0"
+  new_pathways_workbook_name: "pathways workbook - South_Nigeria_2024DHS8_1.0 (new)"
+
+
+  ## MAPPING VARIABLES
+
+  # NAME OF SHP FILE
+  # NAME OF STATE VARIABLE IN SURVEY DATASET
+  shp_file: "gadm41_NGA_shp/gadm41_NGA_1.shp"
+  data_state_var: "v023"
+
+
+  # SURVEY DESIGN VARIABLES
+
+  # USE SURVEY WEIGHTS IN ANALYSIS
+  # SURVEY DESIGN ID
+  # SURVEY DESIGN STRATA
+  use_svy_design: TRUE
+  svy_id_var: "v021"
+  svy_strata_var: "v023"
+
+
+  # CUSTOM VULNERABILITY AND OUTCOME GENERATION SCRIPTS
+
+  vulnerability_script: ""
+  outcomes_script: ""
+
+
+
+
+

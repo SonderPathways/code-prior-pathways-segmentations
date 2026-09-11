@@ -1,0 +1,107 @@
+---
+title: "11_Ethiopia_DHS_CART"
+author: "Adi Greif"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r intro}
+############## 
+# 11_Ethiopia_DHS_CART 
+# Ethiopia DHS 2016, Recode 7
+# Decision tree for creation of typing tool
+# input data: 5_Ethiopia_DHS_exploratory.rds
+# ancestor code: 9b4_Ethiopia_DHS_LCA
+# descendent code: 1
+############## 
+############## 
+rm(list=ls())
+pacman::p_load(dplyr, ggplot2, readr, sf, rpart, rpart.plot)
+setwd("/Users/adigreif/Desktop/Gates Ethiopia/EthiopiaSegmentation/")
+#setwd("C:/Users/anumi/OneDrive - Bill & Melinda Gates Foundation/All Pathways/WS06 Pathways/Pathways/Modeling/Ethiopia #Segmentation_v2/LCA/")
+
+```
+
+```{r urban}
+dhs.seg.urban <- readRDS('dhs_urban_noage.rds')
+
+
+#grow tree
+set.seed(123)
+tree_urban <- rpart(cluster_k5_rename ~ working.yn+pship.cat+ med.permis+wealth.index.ur+ med.index+dv.index+ jdwd.index.cat+partner.working.yn+religionrecode.cat+ work.seasonal+num.15up.4plus+conflict_incidents+num.kids.house.4plus+highestyearsedinHH.yrs+age.yrs+hh.electricity+any.media.yn+anyed.yn+early.sex.15, 
+             data=dhs.seg.urban, method="class")
+
+printcp(tree_urban) # display the results
+
+plotcp(tree_urban) # visualize cross-validation results. note for pruning usually want to minimized cross validation error xerror
+
+summary(tree_urban) # detailed summary of splits
+
+
+```
+
+
+```{r urbanplot, echo=FALSE}
+# plot tree
+plot(tree_urban, uniform=TRUE,
+     main="Classification Tree for Urban LCA")
+text(tree_urban, use.n=TRUE, all=TRUE, cex=.8)
+```
+
+```{r urbanplot2, echo=FALSE}
+# plot tree
+prp(tree_urban)
+#mr=married, msl=muslim, oth=other, prs=poorest, Nwitp1m=no work in past 12 months 
+```
+
+```{r accuracyurban, echo=FALSE}
+#### comparing to training data ######
+PredictCART_train_urban = predict(tree_urban, data=dhs.seg.urban, type="class")
+table(dhs.seg.urban$cluster_k5_rename, PredictCART_train_urban)
+#predicted/total is diagonal entries out of total. 
+#(5330-57-96)/5330=97%
+```
+
+
+```{r rural}
+dhs.seg.rural <- readRDS('dhs_rural_noage.rds')
+
+
+#grow tree
+set.seed(123)
+tree_rural <- rpart(cluster_k5_rename ~ working.yn+pship.cat+ med.permis+wealth.index.ur+ med.index+dv.index+ jdwd.index.cat+partner.working.yn+religionrecode.cat+ work.seasonal+num.15up.4plus+conflict_incidents+num.kids.house.4plus+highestyearsedinHH.yrs+age.yrs+hh.electricity+any.media.yn+anyed.yn+early.sex.15+pastoralnoagro, 
+             data=dhs.seg.rural, method="class")
+
+printcp(tree_rural) # display the results
+
+plotcp(tree_rural) # visualize cross-validation results
+
+summary(tree_rural) # detailed summary of splits
+
+
+```
+
+
+```{r ruralplot, echo=FALSE}
+# plot tree
+plot(tree_rural, uniform=TRUE,
+     main="Classification Tree for Rural LCA")
+text(tree_rural, use.n=TRUE, all=TRUE, cex=.8)
+```
+```{r ruralplot2, echo=FALSE}
+# plot tree
+prp(tree_rural)
+```
+
+```{r accuracyrural, echo=FALSE}
+#### comparing to training data ######
+PredictCART_train_rural = predict(tree_rural, data=dhs.seg.rural, type="class")
+table(dhs.seg.rural$cluster_k5_rename, PredictCART_train_rural)
+#predicted/total is diagonal entries out of total. 
+#(10262-57-236)/10262=97%
+```

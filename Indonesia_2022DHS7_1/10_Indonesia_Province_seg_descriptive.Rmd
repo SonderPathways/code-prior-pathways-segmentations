@@ -1,0 +1,4168 @@
+---
+title: "10.1_Indonesia_Province_segment_descriptive"
+author: "Lang Gao"
+date: "2023-11-22"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '6'
+  word_document:
+    toc: yes
+    toc_depth: '6'
+  pdf_document:
+    toc: yes
+    toc_depth: '6'
+---
+
+<style type="text/css">
+
+h1.title {
+  font-size: 21px;
+  color: Blue;
+  text-align: center;
+}
+h4.author { /* Header 4 - and the author and data headers use this too  */
+    font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+h4.date { /* Header 4 - and the author and data headers use this too  */
+  font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+</style>
+
+</br>
+
+
+---
+
+#######################################
+1. Setting up the script
+#######################################
+
+Set up filepath, notation and packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(scipen = 100, digits = 4)
+
+#Set filepath
+setwd("/Users/langgao/Downloads/Freelancer projects/Sonder/Indonesia/Segmentation")
+```
+
+Load packages
+```{r,echo=FALSE}
+rm(list=ls())
+pacman::p_load("foreign","tidyverse","readxl","ggplot2","ggalluvial","ggrepel","gridExtra","cowplot","survey","dplyr","scales","RColorBrewer","networkD3","haven","corrplot","forcats","vtable","srvyr","readr","vtable","data.table","kableExtra")
+```
+
+##############################################
+2. Data Preparation
+##############################################
+Read in rural and urban data with segments
+```{r, eval=FALSE}
+rural_seg <- readRDS("LCA/Round2/9b_dhs.seg_reform_rural_seg.rds")
+urban_seg <- readRDS("LCA/Round2/9b_dhs.seg_reform_urban_seg.rds")
+#dim(rural_seg) #23075   315
+#dim(urban_seg) #26234   315
+
+#Rename the cluster_k3
+rural_seg <- rural_seg %>%
+  dplyr::rename(k3 = cluster_k3) %>%
+  mutate(k3 = recode(k3, `3` = "R1", `2` = "R2", `1` = "R3"))
+rural_seg <- subset(rural_seg, select = -c(cluster_k2, cluster_k4, cluster_k5))
+#dim(rural_seg) #23075   312
+#table(rural_seg$k3) #R1(6036),R2(8794),R3(8245) 
+
+urban_seg <- urban_seg %>%
+  dplyr::rename(k3 = cluster_k3) %>%
+  mutate(k3 = recode(k3, `3` = "U1", `1` = "U2", `2` = "U3"))
+urban_seg <- subset(urban_seg, select = -c(cluster_k2, cluster_k4, cluster_k5))
+#dim(urban_seg) #26234   312
+#table(urban_seg$k3) # U1(9058),U2(8391),U3(8785)
+
+# rbind urban and rural
+dhs.seg.comb <- rbind(rural_seg, urban_seg)
+#dim(dhs.seg.comb) #49309 (same as earlier after dropping duplicates)  312
+```
+
+From the DHS data
+```{r}
+# Bring in other variables from the original data frame
+HH <-  data.table(read_dta("IDHR71FL.DTA"))
+IR <-  data.table(read_dta("IDIR71FL.DTA"))
+HH$hhid <- str_trim(HH$hhid)
+IR$caseid <- str_trim(IR$caseid)
+#dim(HH) #47963
+#dim(IR) #49627  5491
+
+#Location
+#table(dhs.seg.comb$hv024) #11,12,13,14,15,16,17,18,19,21,31,32,33,34,35,36,51,52,53,61,62,63,64,65,71,72,73,74,75,76,81,82, 91,94 (34)
+  #This comes from variable HH$hv024, region of residence. 11=aceh, 12=north sumatera, 13=west sumatera,14=riau,15=jambi, 16=south sumatera, 17=bengkulu, 18=lampung,19=bangka belitung, 21=riau islands, 31=jakarta,32=west java,33=central java, 34=yogyakarta, 35=east java, 36=banten, 51=bali, 52=west nusa tenggara, 53=east nusa tenggara, 61=west kalimantan, 62=central kalimantan, 63=south kalimantan, 64=east kalimantan, 65=north kalimantan, 71=north sulawesi, 72=central sulawesi, 73=south sulawesi,74=southeast sulawesi, 75=gorontalo, 76=west sulawesi, 81=maluku, 82=north maluku, 91=west papua, 94=papua (34)
+
+#water purify: HH$hv237, HH$hv237a, hv237b, ... hv237f
+```
+
+```{r}
+HH$v001<-HH$hv001
+HH$v002<-HH$hv002
+IR$wt<-IR$v005/1000000
+
+HH <- HH %>% 
+  mutate(cook.fuel = case_when(
+    hv226 == 1 ~ "Electricity",
+    hv226 == 2 ~ "LPG",
+    hv226 == 3 ~ "Natural gas",
+    hv226 == 5 ~ "Kerosene",
+    hv226 == 8 ~ "Wood",
+    hv226 == 95 ~ "No food cooked",
+    TRUE ~ "Other"))
+
+IR.merge <- IR %>% select(v001, v002, caseid, v501, v213, m15_1, m13_1, m14_1, s428aa_1, s428ab_1, s428ac_1, s428ad_1, s428ae_1, s428af_1, s428ag_1, s428ah_1, s428aa_2, s428ab_2, s428ac_2, s428ad_2, s428ae_2, s428af_2, s428ag_2, s428ah_2, v312, v313, v359)
+#dim(IR.merge) #49627     24
+HH.merge <- HH %>% select(v001, v002, cook.fuel, hv237, hv237a, hv237b, hv237c, hv237d, hv237e, hv237f, hv204)
+#dim(HH.merge) #47963     10
+newmerge <-merge(IR.merge, HH.merge, by=c("v001", "v002"), all.x=T)
+#dim(newmerge) #49627    32
+#newmerge$caseid
+#dhs.seg.comb$caseid
+#dhs.seg.comb <- merge(dhs.seg.comb, newmerge, by="caseid", all.x=T)
+#dim(dhs.seg.comb) #49309   343
+
+#table(dhs.seg.comb$insurance.cov.cat1)
+#table(dhs.seg.comb$hh.toilet.flush)
+```
+
+Save the combined dataset
+```{r, eval=FALSE}
+saveRDS(dhs.seg.comb, file="10_dhs.seg.comb.rds")
+```
+
+Variables for the 2nd round
+```{r}
+#Now we have 21 unique variables, I've added to a new sheet = 'final_var_r2" to the output of script 7
+#Domain 1: ed.lev.cat1, marr.cohab, early.cohab.19, media.sum.2plus
+#Domain 2: marr.cohab, husb.ed.mtprim, wd.ownincome.cat, highestyearsedinHH.7plus, num.under15.2plus, jd.hlth.cat
+#Domain 3: work.seasonal, water.cat, wealth.index.ur.ord, hh.watpur.appr, hh.toilet.flush
+#Domain 4: med.distance, med.alone,
+#Domain 5: disc.fp.yn, insurance.cov.cat1
+#Domain 6: slum1, vehic.index, hh.land
+
+var <- read_xlsx("7_Construct_mapping.xlsx",sheet = 'final_var_r2')
+var <- var[!duplicated(var$f.var.name),]
+#dim(var) #21 unique variables after 1st round
+```
+
+```{r}
+pca.var <- c("ed.lev.cat1","early.cohab.19", "marr.cohab", "media.sum.2plus", "husb.ed.mtprim", "wd.ownincome.cat", "highestyearsedinHH.7plus", "num.under15.2plus","jd.hlth.cat", "work.seasonal", "water.cat", "wealth.index.ur.ord", "hh.watpur.appr", "hh.toilet.flush", "med.distance", "med.alone", "disc.fp.yn", "insurance.cov.cat1", "slum1", "vehic.index", "hh.land")
+
+#lapply(dhs.seg[,pca.var],class)
+#here we will read in the rds with transfromed data used in 1st round, no need additional data transformation. Here we just need to use the new list of variables for f <- cbind()
+```
+
+Data preparation for plots
+```{r}
+#recode for LCA, recode those that are actually binary but has characters (string) (or not numeric) to (0,1)
+subset_var <- var[var$f.var.name %in% pca.var, c("f.var.name", "var.type")]
+#print(subset_var) #for those binary and already numeric, it is good. Need to convert insurance.cov.cat1 and hh.toilet.flush which are actually binary but character in script 4 to numeric binary.
+#dhs.seg$insurance.cov.cat1 <- ifelse(dhs.seg$insurance.cov.cat1 == "EPM coverage",1,0) 
+#table(dhs.seg$insurance.cov.cat1)
+#dhs.seg$hh.toilet.flush <- ifelse(dhs.seg$hh.toilet.flush == "flush toilet",1,0)
+#table(dhs.seg$hh.toilet.flush)
+
+ord.var <- subset_var$f.var.name[subset_var$var.type=='ordinal']
+bin.var <- subset_var$f.var.name[subset_var$var.type=='binary']
+cat.var <- subset_var$f.var.name[subset_var$var.type=='categorical']
+
+#ord.var #1 var
+#bin.var #13 var
+#cat.var #7 var
+```
+
+Read in saved national data
+```{r}
+dhs.seg.national <- readRDS("10_dhs.seg.comb.rds")
+#dim(dhs.seg.national) #49309   345
+vulnerability <-readRDS("4_forLCAplot_IND_DHS_vulnerability.rds")
+#dim(vulnerability) #49627   274
+```
+
+##############################################
+3. Plots
+##############################################
+
+```{r}
+col.pattern <- c("#b4adaa", "#9cc2f4", "#386CB0","#03859b","#b590bf","#8E24AA","#bf281c")
+```
+
+## 1. Create Province Level Dataset
+```{r, echo=TRUE}
+#Here we select observations from the 4 provinces:
+  ##West Java (Garut), Bali (Badung), Aceh (Pidie), West Nusa Tenggara (Sambuwa Barat)
+  ##9601 rows (19.5% of the national) for these 4 provinces
+```
+
+```{r, fig.height=7}
+#4 focus district: Garut (in West Java, 32 in hv024), Badung (in Bali, 51 in hv024), Pidie (in Aceh, 11 in hv024) and Sambuwa Barat (in west nusa tenggara, 52 in hv024). For hv024, it is province level. The focus is district level.
+#West Java (Garut), Bali (Badung), Aceh (Pidie), West Nusa Tenggara (Sambuwa Barat)
+
+dhs.seg.prov <- dhs.seg.national %>% 
+  filter(hv024 == 32 | hv024 == 51 | hv024 == 11 | hv024 == 52) %>% 
+  mutate(province = case_when(
+    hv024 == 32 ~ "West Java",
+    hv024 == 51 ~ "Bali",
+    hv024 == 11 ~ "Aceh",
+    hv024 == 52 ~ "West Nusa Tenggara"))
+#dim(dhs.seg.prov) ##9601 rows (19.5% of the national) for these 4 provinces
+table(dhs.seg.prov$province)
+```
+
+```{r, echo=TRUE}
+#table(dhs.seg.prov$k3)
+dhs.seg.prov$k3 <- factor(dhs.seg.prov$k3)
+dhs.seg.prov.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg.prov)
+#In the following cases, I will apply survey design after specific data manipulation (e.g., filter, mutate). The survey weight is applied when we want to make inferences about the entire population from the sample data, and it is used to adjust for the survey's sampling design, such as unequal probabilities of selection, nonresponse, and stratification.
+
+#Note that after apply survey weight, we may see decimals in frequency table. In survey analysis, weights reflect the number of units in the population that each sample unit represents. The weights can be any positive number, but not necessarily an integer. 
+```
+
+```{r, echo=TRUE}
+# From the plots in section 1, we can see that in these 4 provinces, 63% are urban segments. U2 takes 23%. R1 is relatively small, taking up 9%. Not much difference in the distribution of age and pregancy history comparing the national vs. provincial. 
+```
+
+### 1.1. Overview
+```{r}
+seg.tab <- svytable(~k3, design = dhs.seg.prov.des)
+seg.pie <- as.data.frame(seg.tab)
+
+seg.pie <- seg.pie %>%
+  mutate(percent = round((Freq / sum(Freq)) * 100, digits = 0),
+         type = ifelse(substr(k3, 1, 1) == "R", "Rural", "Urban"))%>%
+  ungroup() %>%
+  arrange(desc(k3)) %>%
+  mutate(cumulative_freq = cumsum(Freq),
+         midpoint = cumulative_freq - (Freq/2))
+
+# Define the color palette
+rural_palette <- c("#ffd9b2ff", "#f5b068ff", "#f18619ff")
+urban_palette <- c("#e5f0feff", "#99c4ff", "#002d8f5f")
+palette <- c("Rural" = "#f18619ff", "Urban" = "#002d8f5f")
+seg_colors <- setNames(c(rural_palette, urban_palette), unique(dhs.seg.prov$k3))
+
+ggplot(seg.pie, aes(x = factor(1), fill = k3)) + 
+  geom_bar(aes(weight = Freq), width = 1) +
+  coord_polar(theta = "y") + 
+  geom_text(aes(y = midpoint, label = paste0(round(percent, 1), "%")), color = "black", size = 3.5) + 
+  scale_fill_manual(values = seg_colors) +
+  labs(x = NULL, y = NULL, fill = "Segment") +
+  theme_void() +
+  ggtitle("Segment Distribution")
+
+seg.pie
+```
+
+### 1.2. By province
+```{r, echo=TRUE}
+#below you will see the same plot as that in the national descriptive HTML, section 1.2.
+```
+
+```{r, fig.height=7}
+#seg.location.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.location)
+#dhs.seg.prov.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg.prov)
+seg.prov <- svytable(~k3 + province, design = dhs.seg.prov.des)
+seg.prov <- as.data.frame(seg.prov)
+
+seg.prov <- seg.prov %>%
+  group_by(province) %>% 
+  mutate(perc = round((Freq / sum(Freq)) * 100, digits = 0)) %>% 
+  ungroup()
+
+ggplot(seg.prov, aes(x = province, y = perc, fill = k3)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.5) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 3.5) +
+  labs(x = "Province", y = "Percentage", fill = "Segment", title = "Segment Distribution within Selected Provinces") +
+  scale_fill_manual(values = c("#9cc2f4", "#386CB0","#03859b","#b590bf","#8E24AA","#563880","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
+
+seg.prov
+```
+
+### 1.3. Age by segment
+```{r}
+#the thick bar represents the median value
+# Calculate the median age by segment (k3) using the survey package
+median_age <- svyby(~age.yrs, ~k3, dhs.seg.prov.des, svyquantile, quantiles = c(0.5), na.rm = TRUE)
+median_age <- median_age %>% rename(median_age = age.yrs)
+
+# Calculate the first and third quartiles
+q1_age <- svyby(~age.yrs, ~k3, dhs.seg.prov.des, svyquantile, quantiles = c(0.25), na.rm = TRUE)
+q1_age <- q1_age %>%  rename(q1 = age.yrs)
+q3_age <- svyby(~age.yrs, ~k3, dhs.seg.prov.des, svyquantile, quantiles = c(0.75), na.rm = TRUE)
+q3_age <- q3_age %>%  rename(q3 = age.yrs)
+min_age <- svyby(~age.yrs, ~k3, dhs.seg.prov.des, svyquantile, quantiles = c(0.0), na.rm = TRUE)
+min_age <- min_age %>% rename(min = age.yrs)
+max_age <- svyby(~age.yrs, ~k3, dhs.seg.prov.des, svyquantile, quantiles = c(1.0), na.rm = TRUE)
+max_age <- max_age %>% rename(max = age.yrs)
+
+age_stats <- full_join(q1_age, q3_age, by = "k3")
+age_stats <- full_join(age_stats, median_age, by = "k3")
+age_stats <- full_join(age_stats, min_age, by = "k3")
+age_stats <- full_join(age_stats, max_age, by = "k3")
+
+age_stats <- age_stats %>% 
+  select("k3", "min", "q1", "median_age", "q3", "max")
+
+ggplot(age_stats, aes(x = k3, y = median_age)) +
+  geom_boxplot(aes(lower = q1, upper = q3, middle = median_age, ymin = min, ymax = max), stat = "identity", fill = "grey80", color = "black", width = 0.7) +
+  geom_text(aes(label = round(median_age, 1), y = median_age), position = position_dodge(width = 0.5), vjust = -0.5, color = "black", size = 3) +
+  scale_color_manual(values = seg_colors) + 
+  labs(x = "Segment", y = "Age", title = "Age Distribution by Segment") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+age_stats
+```
+
+### 1.4. Women pregnancy history
+```{r}
+#3 groups for women: (1)women who have children of any age (2) women who are pregnant (3) women without children and who are not pregnant 
+
+seg.woman <- dhs.seg.prov %>% 
+  mutate(with.kid = ifelse(v201 > 0, 1, 0)) %>% 
+  mutate(woman.group = case_when(
+    with.kid == 1 ~ "With child(ren)",
+    (v213 == 1 & with.kid == 0) ~ "Without kid and pregnant",
+    TRUE ~ "No kid nor pregnant"))
+
+seg.woman.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.woman)
+seg.womgp <- svytable(~k3 + woman.group, design = seg.woman.des)
+seg.womgp <- as.data.frame(seg.womgp)
+
+seg.womgp <- seg.womgp %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.womgp$woman.group <- factor(seg.womgp$woman.group , levels = c("With child(ren)", "Without kid and pregnant", "No kid nor pregnant"),labels = c("With child(ren)", "Without kid and pregnant", "No kid nor pregnant"))
+
+ggplot(seg.womgp, aes(x = k3, y = perc, fill = woman.group)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Segment", title = "Distribution of Women within Segment") +
+  scale_fill_manual(values = c("#03859b", "#bf281c", "#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+
+seg.womgp
+```
+
+## 2. Differentiating Variables: Key Vunerability Measures Used in Clustering
+
+```{r, echo=TRUE}
+# Segment 2 have limited media exposure, especially R2. R2 also has the highest percentage (64%) of early marriage/cohabitation (< 19 yrs). 
+# In terms of education level for self, partner, and HH member, R2 reported lowest educational level overall. R2 has no one who have higher education (i.e., beyond complete secondary)
+# Half of R2 use wood as the main cooking fuel for HH.
+# All U3 live in urban non-slum area. 
+```
+
+### 2.1. Heatmap (binary)
+```{r}
+seg.k3 <- dhs.seg.prov %>% 
+  select(c(bin.var),k3)
+
+#dim(seg.k3)
+seg.k3 <- seg.k3 %>%
+  mutate(across(all_of(bin.var), ~ifelse(. == 2, 1, 0), .names = "prop_{.col}")) %>%
+  group_by(k3) %>%
+  summarise(across(starts_with("prop_"), mean)) 
+seg.k3 <- seg.k3 %>% 
+  mutate(area = ifelse(k3 == "R1" | k3 == "R2" | k3 == "R3", "Rural", "Urban"))
+#view(seg.k3)
+
+#define var.labels
+custom_labels <- c(
+  "marr.cohab" = "With partner",
+  "early.cohab.19" = "Early marriage or cohabitation",
+  "media.sum.2plus" = "Use 2+ media sources",
+  "num.under15.2plus" = "With 2+ children U15",
+  "hh.kidwom.rat.2plus" = "Ratio of U5 to women >=2",
+  "husb.ed.mtprim" = "Partner edu more than primary",
+  "highestyearsedinHH.7plus" = "7+ years of edu for HH",
+  "hh.watpur.appr" = "Use water purify method",
+  "hh.toilet.flush" = "Use flush toilet",
+  "med.distance" = "Distance is a big problem",
+  "med.alone" = "Going alone is a big problem",
+  "med.permis" = "Getting permision is a big problem",
+  "disc.fp.yn" = "Discuss FP with someone",
+  "insurance.cov.cat1" = "Coverged by EPM insurance",
+  "hh.land" = "Own land for agriculture"
+)
+
+# Reshape dataframe for ggplot
+df_long <- seg.k3 %>%
+  pivot_longer(cols = starts_with("prop_"), names_to = "var.label", values_to = "prop") %>%
+  mutate(var.label = str_remove(var.label, "prop_"),
+         label = ifelse(var.label %in% names(custom_labels), custom_labels[var.label], var.label),
+         label_percent = scales::percent(prop, accuracy = 1))
+df_long <- merge(df_long, var, by.x = "var.label", by.y = "f.var.name")
+
+df_long$category <- gsub("Woman and her past experiences", "Woman and her\npast experiences", df_long$category)
+df_long$category <- gsub("Household relationships", "Household\nrelationships", df_long$category)
+df_long$category <- gsub("Household economics and living conditions", "HH econ &\nliving cond.", df_long$category)
+df_long$category <- gsub("Health mental models", "Health mental\nmodels", df_long$category)
+df_long$category <- gsub("Social support", "Social\nsupport", df_long$category)
+df_long$category <- gsub("Human and natural systems", "H&N\nsystem", df_long$category)
+
+df_long$category <- factor(df_long$category, 
+                    levels = c("Woman and her\npast experiences", "Household\nrelationships", "HH econ &\nliving cond.", "Health mental\nmodels","Social\nsupport","H&N\nsystem"),ordered = TRUE)
+
+# Plot
+ggplot(df_long, aes(x = factor(k3), y = label, fill = prop)) +
+  geom_tile() +
+  facet_grid(rows = vars(category), cols = vars(area), scales = "free", space = "free", switch = "y") +
+  scale_fill_gradient2(low = "#313695", mid = "#FFFFBF", high = "#A50026", midpoint = 0.5, breaks = seq(0, 1, 0.1)) +
+  labs(title = "Proportion within cluster", x = '', y = '', fill = 'Proportion within\ncluster') +
+  theme_minimal() +
+  theme(legend.text = element_text(size = 5),
+        legend.title = element_text(size = 5),
+        axis.text = element_text(size = 6),
+        strip.background = element_blank(),
+        strip.placement = "outside",
+        strip.text.y = element_text(angle = 180, size = 5), 
+        panel.spacing.y = unit(0.8, "lines"))
+
+#df_long
+```
+
+#### 2.1.1. [Typing Tool] Domain 1 & 2: Relationship status
+```{r}
+#dhs.seg.prov$v501
+seg.reship <- dhs.seg.prov %>% 
+  mutate(status = case_when(
+    v501 == 0 ~ "Never in union",
+    (v501 == 1 | v501 == 2) ~ "Married or living w/ partner",
+    v501 == 3 ~ "Widowed",
+    v501 == 4. ~ "Divorced",
+    TRUE ~ "Separated"))
+
+seg.reship.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.reship)
+seg.reship <- svytable(~k3 + status, design = seg.reship.des)
+seg.reship <- as.data.frame(seg.reship)
+
+seg.reship <- seg.reship %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.reship$status <- factor(seg.reship$status , levels = c("Married or living w/ partner", "Never in union", "Widowed", "Divorced", "Separated"),labels = c("Married or living w/ partner", "Never in union", "Widowed", "Divorced", "Separated"))
+
+ggplot(seg.reship, aes(x = k3, y = perc, fill = status)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Relationship", title = "Distribution of Women by Relationship within Segment") +
+  scale_fill_manual(values = c("#9cc2f4", "#b4adaa", "#386CB0", "#03859b", "#b590bf", "#8E24AA", "#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+  
+
+seg.reship
+```
+
+3#### 2.1.2. [Typing Tool] Domain 1: Media exposure
+```{r}
+#table(dhs.seg.prov$media.sum.2plus)
+seg.media <- dhs.seg.prov %>% 
+  mutate(media = case_when(
+  media.sum.2plus == 1 ~ "0-1 media source",
+  media.sum.2plus == 2 ~ "2+ media sources"))
+
+seg.media.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.media)
+seg.media <- svytable(~k3 + media, design = seg.media.des)
+seg.media <- as.data.frame(seg.media)
+
+seg.media <- seg.media %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+ggplot(seg.media, aes(x = k3, y = perc, fill = media)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Frequent Media Exposure", title = "Distribution of Women by Media Exposure") +
+  scale_fill_manual(values = c("#b4adaa","#03859b")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+
+seg.media
+```
+
+#### 2.1.3. [Typing Tool] Domain 1: Early marriage or cohabition
+```{r}
+#table(dhs.seg.prov$early.cohab.19)
+seg.early.cohab <- dhs.seg.prov %>% 
+  mutate(early.cohab = case_when(
+  early.cohab.19 == 1 ~ "No",
+  early.cohab.19 == 2 ~ "Yes"))
+
+seg.early.cohab.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.early.cohab)
+seg.early.cohab <- svytable(~k3 + early.cohab, design = seg.early.cohab.des)
+seg.early.cohab <- as.data.frame(seg.early.cohab)
+
+seg.early.cohab <- seg.early.cohab %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+ggplot(seg.early.cohab, aes(x = k3, y = perc, fill = early.cohab)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "First Marriage or cohabitation\nWhen <19 Years Old", title = "Distribution of Women by Age of The First Marriage or cohabitation") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.early.cohab
+```
+
+#### 2.1.4. Domain 2: With 2+ children U15
+```{r}
+#table(dhs.seg.prov$num.under15.2plus) #27651 21658
+#class(dhs.seg.prov$num.under15.2plus)
+dhs.seg.prov$num.under15.2plus <- as.factor(dhs.seg.prov$num.under15.2plus)
+
+seg.u15.2plus.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg.prov)
+seg.u15.2plus <- svytable(~k3 + num.under15.2plus, design = seg.u15.2plus.des)
+seg.u15.2plus <- as.data.frame(seg.u15.2plus)
+
+seg.u15.2plus <- seg.u15.2plus %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.u15.2plus$num.under15.2plus <- factor(seg.u15.2plus$num.under15.2plus, levels = c("1", "2"),labels = c("0-1", "2+"))
+
+ggplot(seg.u15.2plus, aes(x = k3, y = perc, fill = num.under15.2plus)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Numer of Children U15", title = "Distribution of Women by Numer of Children Under 15 Years Old") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.u15.2plus
+```
+
+#### 2.1.5. [Typing Tool] Domain 2: Education of husband or partner
+```{r}
+#table(dhs.seg.prov$husb.ed.grp)
+#table(dhs.seg.prov$k3, dhs.seg.prov$husb.ed.grp)
+dhs.seg.prov$husb.ed.grp <- as.character(dhs.seg.prov$husb.ed.grp)
+seg.husb.edu <- dhs.seg.prov %>% 
+  filter(husb.ed.grp != "don't know") 
+
+seg.husb.edu.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.husb.edu)
+seg.husb.edu <- svytable(~k3 + husb.ed.grp, design = seg.husb.edu.des)
+seg.husb.edu <- as.data.frame(seg.husb.edu)
+
+seg.husb.edu <- seg.husb.edu %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.husb.edu$husb.ed.grp <- factor(seg.husb.edu$husb.ed.grp, levels = c("higher", "complete secondary", "incomplete secondary", "complete primary", "incomplete primary", "no education", "Not in union"),labels = c("Higher", "Complete secondary", "Incomplete secondary", "Complete primary", "Incomplete primary", "No education", "Not in union"))
+
+ggplot(seg.husb.edu, aes(x = k3, y = perc, fill = husb.ed.grp)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Educational Level", title = "Distribution of Women by\nEducational Level of Husband/Partner") +
+  scale_fill_manual(values = c("#8E24AA","#b590bf","#03859b","#386CB0","#9cc2f4","#b4adaa","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+
+seg.husb.edu
+
+#Plot 2
+seg.husb.prim <- dhs.seg.prov %>% 
+  mutate(husb.ed.mtprim = ifelse(husb.ed.mtprim == 2, "At least some secondary",
+                                 ifelse(husb.ed.grp == "Not in union", "Not in union", "Primary or less")))
+                                 
+seg.husb.prim.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.husb.prim)
+seg.husb.prim <- svytable(~k3 + husb.ed.mtprim, design = seg.husb.prim.des)
+seg.husb.prim <- as.data.frame(seg.husb.prim)
+
+seg.husb.prim <- seg.husb.prim %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.husb.prim$husb.ed.mtprim <- factor(seg.husb.prim$husb.ed.mtprim, levels = c("At least some secondary", "Primary or less", "Not in union"),labels = c("At least some secondary", "Primary or less", "Not in union"))
+                            
+ggplot(seg.husb.prim, aes(x = k3, y = perc, fill = husb.ed.mtprim)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Educational Level", title = "Distribution of Women by\nEducational Level of Husband/Partner") +
+  scale_fill_manual(values = c("#03859b","#b4adaa","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+
+seg.husb.prim
+```
+
+#### 2.1.6. [Typing Tool] Domain 2: Highest years of edu in HH
+```{r}
+#table(dhs.seg.prov$highestyearsedinHH.7plus)
+seg.hh.edu <- dhs.seg.prov %>% 
+  mutate(hh.edu = case_when(
+  highestyearsedinHH.7plus == 1 ~ "0-7 years",
+  highestyearsedinHH.7plus == 2 ~ "7+ years"))
+
+seg.hh.edu.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.hh.edu)
+seg.hh.edu <- svytable(~k3 + hh.edu, design = seg.hh.edu.des)
+seg.hh.edu <- as.data.frame(seg.hh.edu)
+
+seg.hh.edu <- seg.hh.edu %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+ggplot(seg.hh.edu, aes(x = k3, y = perc, fill = hh.edu)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Highest Years of Education\nin The Household", title = "Distribution of Women by Education Level of HH Memeber") +
+  scale_fill_manual(values = c("#b4adaa","#03859b")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.hh.edu
+```
+
+#### 2.1.7. [Typing Tool] Domain 3: Water purification
+```{r}
+#table(dhs.seg.prov$hh.watpur.appr)
+seg.wawtpur <- dhs.seg.prov %>% 
+  mutate(watpur = case_when(
+  hh.watpur.appr == 1 ~ "No",
+  hh.watpur.appr == 2 ~ "Yes"))
+
+seg.wawtpur.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.wawtpur)
+seg.wawtpur <- svytable(~k3 + watpur, design = seg.wawtpur.des)
+seg.wawtpur <- as.data.frame(seg.wawtpur)
+
+seg.wawtpur <- seg.wawtpur %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+ggplot(seg.wawtpur, aes(x = k3, y = perc, fill = watpur)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Whether Use Water Purification\nto Make It Safe to Drink", title = "Distribution of Women by Water Purification Usage") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.wawtpur
+```
+
+#### 2.1.8. [Typing Tool] Domain 3: Toilet
+```{r}
+#table(dhs.seg.prov$hh.toilet.flush)
+seg.hh.flush <- dhs.seg.prov %>% 
+  mutate(toilet.flush = case_when(
+  hh.toilet.flush == 1 ~ "No flush or no facility",
+  hh.toilet.flush == 2 ~ "Flush toilet"))
+
+seg.hh.flush.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.hh.flush)
+seg.hh.flush <- svytable(~k3 + toilet.flush, design = seg.hh.flush.des)
+seg.hh.flush <- as.data.frame(seg.hh.flush)
+
+seg.hh.flush <- seg.hh.flush %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+ggplot(seg.hh.flush, aes(x = k3, y = perc, fill = toilet.flush)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Type of Toilet", title = "Distribution of Women by Type of Toilet of The HH") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.hh.flush
+
+#Plot 2
+#table(dhs.seg.prov$hh.toilet.type)
+seg.hh.toilet.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg.prov)
+seg.hh.toilet <- svytable(~k3 + hh.toilet.type, design = seg.hh.toilet.des)
+seg.hh.toilet <- as.data.frame(seg.hh.toilet)
+
+seg.hh.toilet <- seg.hh.toilet %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.hh.toilet$hh.toilet.type <- factor(seg.hh.toilet$hh.toilet.type, levels = c("flush toilet", "pit latrine","no facility"),labels = c("Flush toilet", "Pit latrine", "No facility"))
+
+ggplot(seg.hh.toilet, aes(x = k3, y = perc, fill = hh.toilet.type)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Type of Toilet", title = "Distribution of Women by Type of Toilet of The HH") +
+  scale_fill_manual(values = c("#03859b","#bf281c","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.hh.toilet
+```
+
+#### 2.1.9. Domain 4: Going alone being a perceived barrier
+```{r}
+#table(dhs.seg.prov$med.alone) #36537 12772 
+dhs.seg.prov$med.alone <- as.factor(dhs.seg.prov$med.alone)
+
+seg.alone.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.alone <- svytable(~k3 + med.alone, design = seg.alone.des)
+seg.alone <- as.data.frame(seg.alone)
+
+seg.alone <- seg.alone %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.alone$med.alone <- factor(seg.alone$med.alone, levels = c("1", "2"),labels = c("No", "Yes"))
+
+ggplot(seg.alone, aes(x = k3, y = perc, fill = med.alone)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Going Alone to Get Healthcare Is\nPerceived As A Barrier", title = "Distribution of Women by Perceived Barrier") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.alone
+```
+
+#### 2.1.10. Domain 4: Distance being a perceived barrier
+```{r}
+#table(dhs.seg.prov$med.distance) #43566  5743 
+dhs.seg.prov$med.distance <- as.factor(dhs.seg.prov$med.distance)
+
+seg.distance.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.distance <- svytable(~k3 + med.distance, design = seg.distance.des)
+seg.distance <- as.data.frame(seg.distance)
+
+seg.distance <- seg.distance %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.distance$med.distance <- factor(seg.distance$med.distance, levels = c("1", "2"),labels = c("No", "Yes"))
+
+ggplot(seg.distance, aes(x = k3, y = perc, fill = med.distance)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Distance to Get Healthcare Is\nPerceived As A Barrier", title = "Distribution of Women by Perceived Barrier") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.distance
+```
+
+#### 2.1.11. Domain 5: Having someone to discuss FP with
+```{r, echo=TRUE}
+#Majority of R1 and U1 (about 80%) do not have anyone to discuss FP with; possibly related to their relationship status or age (e.g., awareness, social norms, or other behavioral barriers for adolescent girls and young women, can be further investigated for the "why")
+```
+
+```{r}
+#table(dhs.seg.prov$disc.fp.yn) #28247 21062 
+dhs.seg.prov$disc.fp.yn <- as.factor(dhs.seg.prov$disc.fp.yn)
+
+seg.disc.fp.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.disc.fp <- svytable(~k3 + disc.fp.yn, design = seg.disc.fp.des)
+seg.disc.fp <- as.data.frame(seg.disc.fp)
+
+seg.disc.fp <- seg.disc.fp %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.disc.fp$disc.fp.yn <- factor(seg.disc.fp$disc.fp.yn, levels = c("2","1"),labels = c("Yes","No"))
+
+ggplot(seg.disc.fp, aes(x = k3, y = perc, fill = disc.fp.yn)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Whether Having Someone to Discuss FP With", title = "Distribution of Women by Social Support on FP") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.disc.fp
+```
+
+#### 2.1.12. [Typing Tool] Domain 5: Insurance
+```{r, echo=TRUE}
+#R2 barely have ppl who has Employer's Insurance; no one in R2 has multiple insurnace coverage. While about half of U3 are covered by Employer's Insurance.
+```
+
+```{r}
+seg.insurance <- dhs.seg.prov %>% 
+  filter(insurance.cov != "NA") 
+
+seg.insurance.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.insurance)
+seg.insurance <- svytable(~k3 + insurance.cov.cat, design = seg.insurance.des)
+seg.insurance <- as.data.frame(seg.insurance)
+
+seg.insurance <- seg.insurance %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.insurance$insurance.cov.cat <- factor(seg.insurance$insurance.cov.cat, levels = c("Private only", "Employer's only","Multiple coverage", "BPJS only", "Regional only", "No insurance"),labels = c("Private only", "Employer's only","Multiple coverage", "BPJS only", "Regional only", "No insurance"))
+
+ggplot(seg.insurance, aes(x = k3, y = perc, fill = insurance.cov.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Insurance Coverage", title = "Distribution of Women by Insurance Coverage") +
+  scale_fill_manual(values = c("#9cc2f4", "#386CB0","#03859b","#b590bf","#8E24AA","#563880","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+  
+seg.insurance
+```
+
+#### 2.1.13. Domain 3 & 6: Agricultural land ownership
+```{r}
+#table(dhs.seg.prov$hh.land) #31033 18276
+dhs.seg.prov$hh.land <- as.factor(dhs.seg.prov$hh.land)
+
+seg.land.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.land <- svytable(~k3 + hh.land, design = seg.land.des)
+seg.land <- as.data.frame(seg.land)
+
+seg.land <- seg.land %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.land$hh.land <- factor(seg.land$hh.land, levels = c("2","1"),labels = c("Yes","No"))
+
+ggplot(seg.land, aes(x = k3, y = perc, fill = hh.land)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Ownership of Land for Agriculture", title = "Distribution of Women by Agricultural Land Ownership") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.land
+```
+
+### 2.2. Stacked bar (categorical)
+```{r}
+#For categorical data, we need something different:
+rural.seg.cat <- readRDS("LCA/Round2/9b_dhs.seg_rural_seg.rds")
+urban.seg.cat <- readRDS("LCA/Round2/9b_dhs.seg_urban_seg.rds")
+#dim(rural.seg.cat) #23075   315
+#dim(urban.seg.cat) #26234   315
+
+rural.seg.cat <- rural.seg.cat %>%
+  dplyr::rename(k3 = cluster_k3) %>%
+  mutate(k3 = recode(k3, `3` = "R1", `2` = "R2", `1` = "R3"))
+rural.seg.cat <- subset(rural.seg.cat, select = -c(cluster_k2, cluster_k4, cluster_k5))
+#dim(rural.seg.cat) #23075   312
+#table(rural_seg$k3) #R1(6036), R2(8794), R3(8245)
+
+urban.seg.cat <- urban.seg.cat %>%
+  dplyr::rename(k3 = cluster_k3) %>%
+  mutate(k3 = recode(k3, `3` = "U1", `1` = "U2", `2` = "U3"))
+urban.seg.cat <- subset(urban.seg.cat, select = -c(cluster_k2, cluster_k4, cluster_k5))
+#dim(urban.seg.cat) #26234   312
+#table(urban.seg.cat$k3)  #U1(9058), U2(8391), U3(8785)
+
+# rbind urban and rural
+dhs.seg.prov.cat <- rbind(rural.seg.cat, urban.seg.cat)
+dhs.seg.prov.cat <- merge(dhs.seg.prov.cat, newmerge, by="caseid", all.x=T)
+#dim(dhs.seg.prov.cat) #49309   343
+```
+
+```{r, fig.height = 8, fig.width=20}
+# Prepare data
+dhs.seg.prov <- dhs.seg.prov %>% 
+  mutate(slum1 = case_when(
+    slum1 == 1 ~ "rural",
+    slum1 == 2 ~ "urban non-slum",
+    TRUE ~ "urban slum"))
+
+custom_labels <- c(
+  "ed.lev.cat1" = "Women's edu",
+  "wd.ownincome.cat" = "Women's deicision on own income",
+  "jd.hlth.cat" = "Joined decision on women's health",
+  "work.seasonal" = "Women's work",
+  "water.cat" = "Water source",
+  "partner.working" = "Partner's work",
+  "auto.contra" = "Autonomy on contraceptive",
+  "vehic.index" = "Vehicle ownership",
+  "slum1" = "Slum or not"
+)
+
+#table(dhs.seg.prov$slum1)
+
+long_dt <- dhs.seg.prov.cat %>%
+  select(c(cat.var, 'k3')) %>%
+  pivot_longer(cols = all_of(cat.var), names_to = "variable", values_to = "level")
+
+cluster_size <- long_dt %>%
+  group_by(k3, variable) %>%
+  summarize(cluster_total = n(), .groups = 'drop')
+
+agg_dt <- long_dt %>%
+  group_by(k3, variable, level) %>%
+  summarize(ct = n(), .groups = 'drop') %>% 
+  left_join(cluster_size, by = c("k3", "variable")) %>% 
+  mutate(pct = round((ct/cluster_total)*100, 2)) %>% 
+  mutate(var.label = ifelse(variable %in% names(custom_labels), 
+                            custom_labels[variable], 
+                            variable))
+
+agg_dt <- merge(agg_dt, var, by.x = "variable", by.y = "f.var.name")
+
+agg_dt$category <- gsub("Woman and her past experiences", "Woman and her\npast experiences", agg_dt$category)
+agg_dt$category <- gsub("Household relationships", "Household\nrelationships", agg_dt$category)
+agg_dt$category <- gsub("Household economics and living conditions", "HH econ &\nliving cond.", agg_dt$category)
+agg_dt$category <- gsub("Health mental models", "Health mental\nmodels", agg_dt$category)
+agg_dt$category <- gsub("Social support", "Social\nsupport", agg_dt$category)
+agg_dt$category <- gsub("Human and natural systems", "H&N\nsystem", agg_dt$category)
+
+agg_dt$category <- factor(agg_dt$category, 
+                    levels = c("Woman and her\npast experiences", "Household\nrelationships", "HH econ &\nliving cond.", "Health mental\nmodels","Social\nsupport","H&N\nsystem"),ordered = TRUE)
+
+agg_dt$var.label <- gsub("Women's edu", "Women's edu", agg_dt$var.label)
+agg_dt$var.label <- gsub("Women's deicision on own income", "Women's deicision\non own income", agg_dt$var.label)
+agg_dt$var.label <- gsub("Joined decision on women's health", "Joined decision\non women's health", agg_dt$var.label)
+agg_dt$var.label <- gsub("Women's work", "Women's work", agg_dt$var.label)
+agg_dt$var.label <- gsub("Water source", "Water source", agg_dt$var.label)
+agg_dt$var.label <- gsub("Partner's work", "Partner's work", agg_dt$var.label)
+agg_dt$var.label <- gsub("Autonomy on contraceptive", "Autonomy on\ncontraceptive", agg_dt$var.label)
+agg_dt$var.label <- gsub("Vehicle ownership", "Vehicle\nownership", agg_dt$var.label)
+
+#view(agg_dt)
+agg_dt <- agg_dt %>% 
+  mutate(area = ifelse(k3 == "R1" | k3 == "R2" | k3 == "R3", "Rural", "Urban"))
+
+# Define a manual color palette
+my_colors <- c("0" = "#f9c696", "1" = "#FDB863" , "2" = "#BF5B17", "Full or partial autonomy" = "#ECEC26", "No control over" = "#FFFF99", "Not partnered" = "#F0027F", "Higher education" = "#386CB0", "Some eduction" = "#9cc2f4", "No eduction" = "#666666", "Not in union" = "#F0027F", "Not paid in cash or not working" = "#e0dcdc", "No" = "#666666","Yes" = "#D32F2F", "Not protected" = "#666666", "Open protected" = "#C7E9C0",  "Piped or borehole" = "#7FC97F", "Tank or packed" = "#259d25", "All  year" = "#563880", "Seasonal" = "#BEAED4", "Occassional" = "#e6dff1", "No work in the past 12 months" = "#666666", "Worked last 12 months" = "#8E24AA", "Worked last 7 days" = "#b590bf", "Not working or no partner"="#F0027F","rural" = "#ffd9b2ff", "urban non-slum" = "#f2a273f5", "urban slum" = "#d46f32f5")
+
+# Plot
+ggplot(agg_dt, aes(x=var.label, y=pct, fill=level)) + 
+  geom_bar(stat="identity", position="stack",width=0.5) + 
+  facet_grid(category ~ k3, scales = "free_y", space = "free_x", switch = "y") + 
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  scale_fill_manual(values=my_colors) +
+  labs(title = "Distribution within cluster", x = "", y = "Percentage of cluster total") +
+  guides(fill=guide_legend(title="Level")) +
+  geom_text(aes(label=round(pct, 0)), position=position_stack(vjust=0.5), size=3) +
+  theme_minimal() +
+  coord_flip()  +
+  theme(strip.background = element_blank(),
+        strip.placement = "outside",
+        axis.text.x = element_text(size = 6, angle = 0, hjust = 0.5, vjust = 0.5),
+        axis.text.y = element_text(size = 5.5),
+        panel.spacing = unit(0.1, "lines"), 
+        strip.text = element_text(size = 6))
+
+#agg_dt
+```
+
+#### 2.2.1. [Typing Tool] Women's education
+```{r}
+#Plot 1
+#table(dhs.seg.prov$ed.lev.cat1) #1: higher education #2: no education #3: some education
+seg.edu1.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.edu1 <- svytable(~k3 + ed.lev.cat1, design = seg.edu1.des)
+seg.edu1 <- as.data.frame(seg.edu1)
+
+seg.edu1 <- seg.edu1 %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.edu1$ed.lev.cat1 <- factor(seg.edu1$ed.lev.cat1, levels = c("1","3","2"),labels = c("Higher education (beyond\ncomplete secondary)", "Some education", "No education"))
+
+ggplot(seg.edu1, aes(x = k3, y = perc, fill = ed.lev.cat1)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Educational Level", title = "Distribution of Women by Educational Level within Segment") +
+  scale_fill_manual(values = c("#8E24AA","#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+
+seg.edu1
+
+#Plot 2
+#table(dhs.seg.prov$ed.lev) #None (==0), incomplete primary (==1), complete primary (==2), incomplete secondary (==3), complete secondary (==4), higher education (==5)
+seg.edu <- dhs.seg.prov %>% 
+  mutate(ed.lev = case_when(
+    ed.lev == 0 ~ "No education",
+    ed.lev == 1 ~ "Incomplete primary",
+    ed.lev == 2 ~ "Complete primary",
+    ed.lev == 3 ~ "Incomplete secondary",
+    ed.lev == 4 ~ "Complete secondary",
+    ed.lev == 5 ~ "Higher education")) %>% 
+  mutate(ed.lev = factor(ed.lev, levels = c("Higher education", "Complete secondary", "Incomplete secondary", "Complete primary", "Incomplete primary", "No education")))  
+
+#sum(896,3792,8382,14105,13066,9068)
+seg.edu.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.edu)
+seg.edu <- svytable(~k3 + ed.lev, design = seg.edu.des)
+seg.edu <- as.data.frame(seg.edu)
+
+seg.edu <- seg.edu %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+ggplot(seg.edu, aes(x = k3, y = perc, fill = ed.lev)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Educational Level", title = "Distribution of Women by Educational Level within Segment") +
+  scale_fill_manual(values = c("#8E24AA","#b590bf","#03859b","#386CB0","#9cc2f4","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+
+seg.edu
+```
+
+#### 2.2.2. Domain 2: Women's decision on own income
+```{r}
+#table(dhs.seg.prov$wd.ownincome.cat) #1(No), 2(Not in union), 3(Not paid in cash or not working), 4(Yes)
+dhs.seg.prov$wd.ownincome.cat <- as.factor(dhs.seg.prov$wd.ownincome.cat)
+
+seg.wd.ownincome.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.wd.ownincome <- svytable(~k3 + wd.ownincome.cat, design = seg.wd.ownincome.des)
+seg.wd.ownincome <- as.data.frame(seg.wd.ownincome)
+
+seg.wd.ownincome <- seg.wd.ownincome %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.wd.ownincome$wd.ownincome.cat <- factor(seg.wd.ownincome$wd.ownincome.cat, levels = c("4","1","3","2"),labels = c("Yes","No", "Not paid in cash or not working","Not in union"))
+
+ggplot(seg.wd.ownincome, aes(x = k3, y = perc, fill = wd.ownincome.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Decision-making Power on Own Income", title = "Distribution of Women by Decision-making Power on Own Income") +
+  scale_fill_manual(values = c("#03859b","#386CB0","#9cc2f4","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.wd.ownincome
+```
+
+#### 2.2.3. Domain 2: Joined decision on women's health
+```{r}
+#table(dhs.seg.prov$jd.hlth.cat) #1(No, 18603), 2(Not in union, 15094), 3(Yes, 15612)
+#table(vulnerability$jd.hlth.cat)
+dhs.seg.prov$jd.hlth.cat <- as.factor(dhs.seg.prov$jd.hlth.cat)
+
+seg.jd.hlth.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.jd.hlth <- svytable(~k3 + jd.hlth.cat, design = seg.jd.hlth.des)
+seg.jd.hlth <- as.data.frame(seg.jd.hlth)
+
+seg.jd.hlth <- seg.jd.hlth %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.jd.hlth$jd.hlth.cat <- factor(seg.jd.hlth$jd.hlth.cat, levels = c("3","1","2"),labels = c("Yes","No", "Not in union"))
+
+ggplot(seg.jd.hlth, aes(x = k3, y = perc, fill = jd.hlth.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Joined Decision-making\non Women's Healthcare", title = "Distribution of Women by Joined Decision-making Power\non Women's Healthcare") +
+  scale_fill_manual(values = c("#03859b","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.jd.hlth
+```
+
+#### 2.2.4. Domain 3: Women's work
+```{r}
+#table(dhs.seg.prov$work.seasonal) #1(All  year), 2(No work in the past 12 months), 3(Occassional), 4(Seasonal)
+dhs.seg.prov$work.seasonal <- as.factor(dhs.seg.prov$work.seasonal)
+
+seg.wkseasonal.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.wkseasonal <- svytable(~k3 + work.seasonal, design = seg.wkseasonal.des)
+seg.wkseasonal <- as.data.frame(seg.wkseasonal)
+
+seg.wkseasonal <- seg.wkseasonal %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.wkseasonal$work.seasonal <- factor(seg.wkseasonal$work.seasonal, levels = c("1","3", "4","2"),labels = c("All  year","Occassional", "Seasonal", "No work in the past 12 months"))
+
+ggplot(seg.wkseasonal, aes(x = k3, y = perc, fill = work.seasonal)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Women's Work", title = "Distribution of Women by Women's Work") +
+  scale_fill_manual(values = c("#03859b","#386CB0","#9cc2f4","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.wkseasonal
+```
+
+#### 2.2.5. [Typing Tool] Domain 3: Drinking water
+```{r, echo=TRUE}
+#In Indonesia:
+  ##Open protected: protected well, protected spring
+  ##Piped/PDM or borehole: piped into dwelling, piped to yard/plot, piped to neighbor, public tap/standpipe, tube well or borehole
+  ##Tank (refilled) or bottled: tanker truck, cart with small tank, bottled water, refilled water
+  ##Not protected: unprotected well, unprotected spring, river/dam/lake/ponds/stream/canal/irrigation channel, rainwater, other (none of the rest)
+
+#Half of the R2 use open protected sources for drinking water, and other 30% access unprotected sources for drinking water.
+```
+
+```{r}
+#class(dhs.seg.prov$water.cat)
+seg.water <- dhs.seg.prov %>% 
+  mutate(water = case_when(
+  water.cat == 1 ~ "Not protected",
+  water.cat == 2 ~ "Open protected",
+  water.cat == 3 ~ "Piped/PDAM or borehole",
+  water.cat == 4 ~ "Tank (refilled) or bottled"))
+
+seg.water.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.water)
+seg.water <- svytable(~k3 + water, design = seg.water.des)
+seg.water <- as.data.frame(seg.water)
+
+seg.water <- seg.water %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+ggplot(seg.water, aes(x = k3, y = perc, fill = water)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Source of Drinking Water", title = "Distribution of Women by Source of Drinking Water") +
+  scale_fill_manual(values = c("#b4adaa","#9cc2f4", "#386CB0", "#03859b")) +
+  theme_minimal() +
+ theme(axis.text.x = element_text(angle = 0, hjust = 1),
+      legend.title = element_text(size = 9))
+  
+seg.water
+```
+
+#### 2.2.6. [Typing Tool] Domain 3 & 6: Vehical ownership
+```{r}
+#table(dhs.seg.prov$vehic.index)
+#1(6902, no vehical), 2 (22763, 1 piece), 3(19644, 2+ pieces)
+seg.vehic <- dhs.seg.prov %>% 
+  mutate(vehicle = case_when(
+   vehic.index == 1 ~ "No vehical",
+   vehic.index == 2 ~ "Own 1 type of vehical",
+   vehic.index == 3 ~ "Own 2 types of vehical"))
+
+seg.vehic.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.vehic)
+seg.vehic <- svytable(~k3 + vehicle, design = seg.vehic.des)
+seg.vehic <- as.data.frame(seg.vehic)
+
+seg.vehic <- seg.vehic %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+ggplot(seg.vehic, aes(x = k3, y = perc, fill = vehicle)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Vehical Ownership", title = "Distribution of Women by Vehical Ownership") +
+  scale_fill_manual(values = c("#b4adaa","#9cc2f4","#03859b")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+
+seg.vehic
+```
+
+#### 2.2.7. Domain 6: Whether living in urban slum
+```{r}
+dhs.seg.prov$slum1 <- as.factor(dhs.seg.prov$slum1)
+
+seg.slum.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.slum <- svytable(~k3 + slum1, design = seg.slum.des)
+seg.slum <- as.data.frame(seg.slum)
+
+seg.slum <- seg.slum %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+ggplot(seg.slum, aes(x = k3, y = perc, fill = slum1)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Area of Living", title = "Distribution of Women by Area of Living") +
+  scale_fill_manual(values = c("#03859b","#386CB0","#9cc2f4","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.slum
+```
+
+### 2.3. Histogram (ordinal)
+```{r, echo=TRUE}
+#similar trend is seen in rural and urban: distribution of 1-5 wealth is even within segment 1, while segment 2 has an noticeable portion of the poorest, and segment 2 has no richest. On the contrary, most of the rishest fall under segment 3, which barely has any poorest.
+```
+
+### 2.3.1. Domain 3: Wealth index
+```{r, fig.height=8}
+ggplot(dhs.seg.prov, aes(x = wealth.index.ur.ord)) + 
+  geom_histogram(binwidth = 1, fill = "#69b3a2", color = "#e9ecef", alpha = 0.9) +
+  geom_text(stat = 'count', aes(label = after_stat(count)), vjust = -0.5, size = 3) +
+  facet_wrap(~ k3) +
+  labs(title = "Wealth Index by Cluster",
+       x = "Wealth Index",
+       y = "Count") +
+  theme_minimal()
+```
+
+```{r, fig.height= 7}
+#dim(dhs.seg.prov)
+wealth <- dhs.seg.prov %>%
+  group_by(k3, wealth.index.ur.ord) %>%
+  summarise(count = n()) %>%
+  ungroup()
+#view(wealth)
+seg.sub <- wealth %>%
+  group_by(k3) %>%
+  summarise(subtotal = sum(count),.groups = 'drop') 
+#view(seg.sub)
+
+wealth <- merge(wealth, seg.sub, by = "k3")
+
+wealth <- wealth %>%
+  mutate(percentage = (count / subtotal))
+
+ggplot(wealth, aes(x = wealth.index.ur.ord, y = percentage, fill = as.factor(wealth.index.ur.ord))) +
+  geom_bar(stat = "identity", position = "dodge", fill = "#69b3a2", color = "#e9ecef", alpha = 0.9) +
+  geom_text(aes(label = sprintf("%.0f%%", percentage * 100)),  position = position_dodge(width = 0.9), vjust = -0.3, color = "black", size = 3.5) +
+  facet_wrap(~ k3) +
+  scale_y_continuous(labels = scales::percent_format()) + 
+  labs(title = "Wealth Index by Cluster (Percentage)", x = "Wealth Index", y = "Percentage") +
+  theme_minimal()
+```
+
+##### 2.3.1.1. [Typing Tool] Domain 3: Cooking fuel
+```{r}
+#table(dhs.seg.prov$cook.fuel)
+seg.cook.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg.prov)
+seg.cook <- svytable(~k3 + cook.fuel, design = seg.cook.des)
+seg.cook <- as.data.frame(seg.cook)
+
+seg.cook <- seg.cook %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.cook$cook.fuel <- factor(seg.cook$cook.fuel, levels = c("Electricity", "LPG", "Natural gas", "Kerosene", "Wood", "No food cooked", "Other"),labels = c("Electricity", "LPG", "Natural gas", "Kerosene", "Wood", "No food cooked", "Other"))
+
+ggplot(seg.cook, aes(x = k3, y = perc, fill = cook.fuel)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Type of Cooking Fuel", title = "Distribution of Women by Type of Cooking Fuel") +
+  scale_fill_manual(values = c("#9cc2f4", "#386CB0", "#03859b", "#b590bf", "#8E24AA", "#b4adaa", "#bf281c")) +
+  theme_minimal() +
+ theme(axis.text.x = element_text(angle = 0, hjust = 1),
+      legend.title = element_text(size = 10))
+  
+seg.cook
+```
+
+## 3. Outcome Variables
+Outcome variables (15)
+```{r}
+#take out a few outcome variables that do not have clear patterns overall, and take out the duplicated ones (those duplicates were created for data exploration purpose)
+outcomes.list <- c("wom.hlthck","hb.1","anc.num","anc.4plus","anyanc","anc.1sttri", "bc.ever","fp.mod.ever", "baby.hlthck","breastfed","low.wgt.last","zerodose.yn","dpt1.yn","u1mort.yn","u5mort.yn")
+```
+
+### 3.1. Health check
+```{r, echo=TRUE}
+#Most of the plots below are based on women who had child born in the last 5 years. 
+#To include all women, we can look at the plot under 3.3.2, then we can see that the vast majority of R1 and U1 do not have child born in the last 5 years; and about half of R2, U2, R3, U3 have child born in the last 5 years.
+```
+
+```{r}
+#class(dhs.seg.prov$wom.hlthck) #numeric
+#summary(dhs.seg.prov$wom.hlthck) #34185  NAs, because this is only asked to women who have recent delivery
+#wom.hlthck: binary, 1 means has postnatal health check when either checked at the facility or after leaving the facility; otherwise 0
+#the survey question is simply, yes, no, dk, so keep it as it is
+
+#dhs.seg.prov$wom.hlthck <- factor(dhs.seg.prov$wom.hlthck)
+#2980
+seg.wom.hlthck <- dhs.seg.prov %>% 
+  filter(wom.hlthck != "NA") 
+
+seg.wom.hlthck.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.wom.hlthck)
+seg.wom.hlthck <- svytable(~k3 + wom.hlthck, design = seg.wom.hlthck.des)
+seg.wom.hlthck <- as.data.frame(seg.wom.hlthck)
+
+seg.wom.hlthck <- seg.wom.hlthck %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+#view(seg.wom.hlthck)
+
+##recorder
+seg.wom.hlthck$wom.hlthck <- factor(seg.wom.hlthck$wom.hlthck, levels = c("0", "1"),labels = c("No", "Yes"))
+
+ggplot(seg.wom.hlthck, aes(x = k3, y = perc, fill = wom.hlthck)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Whether had health check", title = "Postnatal Health Check by Segment\n(for Women Who Had Child Born in The Last 5 Years)") +
+  scale_fill_manual(values = c("#b4adaa","#03859b","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+
+seg.wom.hlthck
+```
+
+### 3.2. Home birth
+```{r}
+#When the woman gave birth in the past 5 years, 42% of R2 chose to deliver at home. For U3, only 3% choose to deliver at home.
+```
+
+```{r}
+#checked, unique caseid has only 1 value for hb.1
+#IR$m15_1 #11 = respondent's home, 12 = other home,  96 = other || 21 = government hospital, 22 = government clinic, 23 = government health center, 24 = government mobile clinic, 25 = government village midwife, 26 = other public sector, 27 = ukbm: village health post, 28 = ukbm:health post, 29 = ukbm:other || 31 = private hospital/clinic, 32 = private clinic /maternity home, 33 = private obstetrician, 34 = private general practitioner, 35 = private midwife, 36 = nurse, 37 = other private sector
+#table(IR$m15_1)
+```
+
+```{r}
+#hb.1: binary, 1 means the latest born child was delivered at home
+#summary(dhs.seg.prov$hb.1) #64756  NAs
+dhs.seg.prov$hb.1 <- factor(dhs.seg.prov$hb.1)
+#36298
+seg.hb.1 <- dhs.seg.prov %>% 
+  filter(hb.1 != "NA") 
+
+seg.hb.1.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.hb.1)
+seg.hb.1 <- svytable(~k3 + hb.1, design = seg.hb.1.des)
+seg.hb.1 <- as.data.frame(seg.hb.1)
+
+seg.hb.1 <- seg.hb.1 %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.hb.1$hb.1 <- factor(seg.hb.1$hb.1, levels = c("1", "0"),labels = c("Homes", "Not home"))
+
+ggplot(seg.hb.1, aes(x = k3, y = perc, fill = hb.1)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Place of delivery", title = "Place of Delivery for The Last Born Child") +
+  scale_fill_manual(values = c("#b4adaa","#03859b","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+
+seg.hb.1
+```
+
+### 3.3. About ANC
+#### 3.3.1. Number of ANC
+```{r}
+#"anc.num": number of ANC during the pregnancy
+median_anc <- svyby(~anc.num, ~k3, dhs.seg.prov.des, svyquantile, quantiles = c(0.5), na.rm = TRUE)
+median_anc <- median_anc %>% rename(median_anc = anc.num)
+
+q1_anc <- svyby(~anc.num, ~k3, dhs.seg.prov.des, svyquantile, quantiles = c(0.25), na.rm = TRUE)
+q1_anc <- q1_anc %>%  rename(q1 = anc.num)
+q3_anc <- svyby(~anc.num, ~k3, dhs.seg.prov.des, svyquantile, quantiles = c(0.75), na.rm = TRUE)
+q3_anc <- q3_anc %>%  rename(q3 = anc.num)
+min_anc <- svyby(~anc.num, ~k3, dhs.seg.prov.des, svyquantile, quantiles = c(0.0), na.rm = TRUE)
+min_anc <- min_anc %>% rename(min = anc.num)
+max_anc <- svyby(~anc.num, ~k3, dhs.seg.prov.des, svyquantile, quantiles = c(1.0), na.rm = TRUE)
+max_anc <- max_anc %>% rename(max = anc.num)
+
+anc_stats <- full_join(q1_anc, q3_anc, by = "k3")
+anc_stats <- full_join(anc_stats, median_anc, by = "k3")
+anc_stats <- full_join(anc_stats, min_anc, by = "k3")
+anc_stats <- full_join(anc_stats, max_anc, by = "k3")
+anc_stats <- anc_stats %>% 
+  select("k3", "min", "q1", "median_anc", "q3", "max")
+
+ggplot(anc_stats, aes(x = k3, y = median_anc)) +
+  geom_boxplot(aes(lower = q1, upper = q3, middle = median_anc, ymin = min, ymax = max), stat = "identity", fill = "grey80", color = "black", width = 0.7) +
+  geom_text(aes(label = round(median_anc, 1), y = median_anc), position = position_dodge(width = 0.5), vjust = 1.5, color = "black", size = 3) +
+  scale_color_manual(values = seg_colors) + 
+  labs(x = "Segment", y = "Numer of ANC Attendance", title = "Distribution of Number of ANC Attendance by Segment") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+anc_stats
+```
+
+#### 3.3.2. ANC attendance category
+```{r}
+seg.anc.cat <- dhs.seg.prov %>% 
+  mutate(anc.cat = case_when(
+    anc.num == 0 ~ "No ANC attendance",
+    (anc.num > 0 & anc.num < 4) ~ "1-3 ANC attendance",
+    (anc.num >=4 & anc.num < 7) ~ "4-6 ANC attendance",
+    (anc.num >=7 & anc.num <10) ~ "7-9 ANC attendance",
+    anc.num >=10 ~ "10+ ANC attendance",
+    TRUE ~ "No child born in the last 5 years"
+  ))
+
+seg.anc.cat.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.anc.cat)
+seg.anc.cat <- svytable(~k3 + anc.cat, design = seg.anc.cat.des)
+seg.anc.cat <- as.data.frame(seg.anc.cat)
+
+seg.anc.cat <- seg.anc.cat %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.anc.cat$anc.cat <- factor(seg.anc.cat$anc.cat, levels = c("1-3 ANC attendance", "4-6 ANC attendance", "7-9 ANC attendance", "10+ ANC attendance", "No ANC attendance", "No child born in the last 5 years"),labels = c("1-3 ANC attendance", "4-6 ANC attendance", "7-9 ANC attendance", "10+ ANC attendance", "No ANC attendance", "No child born in the last 5 years"))
+
+ggplot(seg.anc.cat, aes(x = k3, y = perc, fill = anc.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Numer of ANC Attendance", title = "Distribution of Women by ANC Attendance\n(All Women Included)") +
+  scale_fill_manual(values = c("#9cc2f4", "#386CB0", "#03859b", "#8E24AA", "#b4adaa","#bf281c")) +
+  theme_minimal() +
+ theme(axis.text.x = element_text(angle = 0, hjust = 1),
+      legend.title = element_text(size = 9))
+  
+seg.anc.cat
+```
+
+Exclude No child born in the last 5 years"
+```{r}
+#Plot 1
+seg.anc.cat1 <- dhs.seg.prov %>% 
+  filter(!is.na(anc.num)) %>% 
+  mutate(anc.cat = case_when(
+    anc.num == 0 ~ "No ANC attendance",
+    (anc.num > 0 & anc.num < 4) ~ "1-3 ANC attendance",
+    (anc.num >=4 & anc.num < 7) ~ "4-6 ANC attendance",
+    (anc.num >=7 & anc.num < 10) ~ "7-9 ANC attendance",
+    anc.num >=10 ~ "10+ ANC attendance"))
+
+seg.anc.cat1.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.anc.cat1)
+seg.anc.cat1 <- svytable(~k3 + anc.cat, design = seg.anc.cat1.des)
+seg.anc.cat1 <- as.data.frame(seg.anc.cat1)
+
+seg.anc.cat1 <- seg.anc.cat1 %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.anc.cat1$anc.cat <- factor(seg.anc.cat1$anc.cat, levels = c("1-3 ANC attendance", "4-6 ANC attendance", "7-9 ANC attendance", "10+ ANC attendance", "No ANC attendance"),labels = c("1-3 ANC attendance", "4-6 ANC attendance", "7-9 ANC attendance", "10+ ANC attendance", "No ANC attendance"))
+
+ggplot(seg.anc.cat1, aes(x = k3, y = perc, fill = anc.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Numer of ANC Attendance", title = "Distribution of Women by ANC Attendance\n(for Women Who Had Child Born in The Last 5 Years)") +
+  scale_fill_manual(values = c("#9cc2f4", "#386CB0", "#03859b", "#8E24AA", "#b4adaa","#bf281c")) +
+  theme_minimal() +
+ theme(axis.text.x = element_text(angle = 0, hjust = 1),
+      legend.title = element_text(size = 9))
+  
+seg.anc.cat1
+
+#Plot 2
+seg.anc.cat2 <- dhs.seg.prov %>% 
+  filter(!is.na(anc.num)) %>% 
+  mutate(anc.cat = case_when(
+    anc.num == 0 ~ "No ANC attendance",
+    (anc.num > 0 & anc.num <= 4) ~ "1-4 ANC attendance",
+    (anc.num > 4 & anc.num <= 7) ~ "5-7 ANC attendance",
+    (anc.num > 7 & anc.num <= 10) ~ "8-10 ANC attendance",
+    anc.num >=11 ~ "11+ ANC attendance"))
+
+seg.anc.cat2.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.anc.cat2)
+seg.anc.cat2 <- svytable(~k3 + anc.cat, design = seg.anc.cat2.des)
+seg.anc.cat2 <- as.data.frame(seg.anc.cat2)
+
+seg.anc.cat2 <- seg.anc.cat2 %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.anc.cat2$anc.cat <- factor(seg.anc.cat2$anc.cat, levels = c("1-4 ANC attendance", "5-7 ANC attendance", "8-10 ANC attendance", "11+ ANC attendance", "No ANC attendance"),labels = c("1-4 ANC attendance", "5-7 ANC attendance", "8-10 ANC attendance", "11+ ANC attendance", "No ANC attendance"))
+
+ggplot(seg.anc.cat2, aes(x = k3, y = perc, fill = anc.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Numer of ANC Attendance", title = "Distribution of Women by ANC Attendance\n(for Women Who Had Child Born in The Last 5 Years)") +
+  scale_fill_manual(values = c("#9cc2f4", "#386CB0", "#03859b", "#8E24AA", "#b4adaa","#bf281c")) +
+  theme_minimal() +
+ theme(axis.text.x = element_text(angle = 0, hjust = 1),
+      legend.title = element_text(size = 9))
+  
+seg.anc.cat2
+
+#Plot 3
+seg.anc.cat3 <- dhs.seg.prov %>% 
+  filter(!is.na(anc.num)) %>% 
+  mutate(anc.cat = case_when(
+    (anc.num <= 7) ~ "7 or fewer ANC attendance",
+    (anc.num > 7) ~ "8 or more ANC attendance"))
+
+seg.anc.cat3.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.anc.cat3)
+seg.anc.cat3 <- svytable(~k3 + anc.cat, design = seg.anc.cat3.des)
+seg.anc.cat3 <- as.data.frame(seg.anc.cat3)
+
+seg.anc.cat3 <- seg.anc.cat3 %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+ggplot(seg.anc.cat3, aes(x = k3, y = perc, fill = anc.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Numer of ANC Attendance", title = "Distribution of Women by ANC Attendance\n(for Women Who Had Child Born in The Last 5 Years)") +
+  scale_fill_manual(values = c("#9cc2f4", "#386CB0", "#03859b", "#8E24AA", "#b4adaa","#bf281c")) +
+  theme_minimal() +
+ theme(axis.text.x = element_text(angle = 0, hjust = 1),
+      legend.title = element_text(size = 9))
+  
+seg.anc.cat3
+```
+
+```{r, eval=FALSE}
+#"anc.4plus": binary, if anc.num >=4
+dhs.seg.prov$anc.4plus <- factor(dhs.seg.prov$anc.4plus)
+#36289
+seg.anc.4plus <- dhs.seg.prov %>% 
+  filter(anc.4plus != "NA") %>% 
+  group_by(k3, anc.4plus) %>%
+  summarize(count = n()) %>%
+  mutate(perc = round((count/sum(count))*100, digits = 0)) %>%
+  ungroup() 
+#view(seg.anc.4plus)
+
+##recorder
+seg.anc.4plus$anc.4plus <- factor(seg.anc.4plus$anc.4plus, levels = c("0", "1"),labels = c("0 - 3 times", "4 or more times"))
+
+ggplot(seg.anc.4plus, aes(x = k3, y = perc, fill = anc.4plus)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Numer of ANC", title = "Distribution of Women by ANC Attendance\n(for Women Who Had Child Born in The Last 5 Years)") +
+  scale_fill_manual(values = c("#b4adaa","#03859b","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+```
+
+```{r, eval=FALSE}
+#"anyanc": binary
+dhs.seg.prov$anyanc <- factor(dhs.seg.prov$anyanc)
+#36289
+seg.anyanc <- dhs.seg.prov %>% 
+  filter(anyanc != "NA") %>% 
+  group_by(k3, anyanc) %>%
+  summarize(count = n()) %>%
+  mutate(perc = round((count/sum(count))*100, digits = 0)) %>%
+  ungroup() 
+#view(seg.anyanc)
+
+##recorder
+seg.anyanc$anyanc <- factor(seg.anyanc$anyanc, levels = c("0", "1"),labels = c("No ANC visit", "At least 1 ANC visit"))
+
+ggplot(seg.anyanc, aes(x = k3, y = perc, fill = anyanc)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Numer of ANC", title = "Whether Had Any ANC Visit During the Pregnancy") +
+  scale_fill_manual(values = c("#b4adaa","#03859b","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+```
+
+#### 3.3.3. ANC attendance in the 1st trimester
+```{r}
+#"anc.1sttri": binary, whether paid the first ANC visit during the first  trimester
+dhs.seg.prov$anc.1sttri <- factor(dhs.seg.prov$anc.1sttri)
+
+seg.anc.1sttri <- dhs.seg.prov %>% 
+  filter(anc.1sttri != "NA") 
+
+seg.anc.1sttri.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.anc.1sttri)
+seg.anc.1sttri <- svytable(~k3 + anc.1sttri, design = seg.anc.1sttri.des)
+seg.anc.1sttri <- as.data.frame(seg.anc.1sttri)
+
+seg.anc.1sttri <- seg.anc.1sttri %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.anc.1sttri$anc.1sttri <- factor(seg.anc.1sttri$anc.1sttri, levels = c("0", "1"),labels = c("No", "Yes"))
+
+ggplot(seg.anc.1sttri, aes(x = k3, y = perc, fill = anc.1sttri)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "ANC in First Trimester", title = "Whether Made The First ANC Visit During The First Trimester\n(for Women Who Had Child Born in The Last 5 Years)") +
+  scale_fill_manual(values = c("#b4adaa","#03859b","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+
+seg.anc.1sttri
+```
+
+### 3.4. Birth complication
+```{r, echo=TRUE}
+#Birth complications include: #aa:prolonged labor; ab:vaginal bleeding; ac: A high fever and foul smelling vaginal discharge; ad:Convulsions; ae: water breaks; af: no strength to press; ag: anxious/in pain; ah: other
+  ##For those who had baby born in the last 5 years in R1 and U1, all of them experienced some sort of birth complications.
+```
+
+```{r}
+#IR[,bc.1:= ifelse(s428aa_1== 1 | s428ab_1== 1 | s428ac_1== 1 | s428ad_1== 1 | s428ae_1== 1 | s428af_1== 1 | s428ag_1 == 1 | s428ah_1== 1,1,0)]
+#IR[,bc.2:= ifelse(s428aa_2== 1 | s428ab_2== 1 | s428ac_2== 1 | s428ad_2== 1 | s428ae_2== 1 | s428af_2== 1 | s428ag_2 == 1 | s428ah_2== 1,1,0)]
+#0==no, 1==yes, 8==don't know
+
+#aa:PROLONGED LABOR; ab:VAGINAL BLEEDING; ac: A high fever and foul smelling vaginal discharge; ad:Convulsions; ae: water breaks; af: no strength to press; ag: anxious/in pain; ah: other
+
+#prolonged labor and anxious/in pain are most common 
+
+#table(IR$s428aa_1)
+#table(IR$s428ab_1)
+#table(IR$s428ac_1)
+#table(IR$s428ad_1)
+#table(IR$s428ae_1)
+#table(IR$s428af_1)
+#table(IR$s428ag_1)
+#table(IR$s428ah_1)
+
+#table(IR$s428aa_2)
+#table(IR$s428ab_2)
+#table(IR$s428ac_2)
+#table(IR$s428ad_2)
+#table(IR$s428ae_2)
+#table(IR$s428af_2)
+#table(IR$s428ag_2)
+#table(IR$s428ah_2)
+
+dhs.seg.prov <- dhs.seg.prov %>%
+  mutate(bc.new = case_when(
+    (bc.ever == 0) ~ "No birth complication",
+    (is.na(bc.ever) ~ NA),
+    (s428aa_1== 1 | s428aa_2== 1) ~ "Prolonged labor",
+    TRUE ~ "Other types of birth complications"
+  ))
+
+table(dhs.seg.prov$bc.new)
+#table(dhs.seg.prov$bc.ever)
+```
+
+```{r}
+#"bc.ever": if they had birth complication for last birth or next-to-last birth
+dhs.seg.prov$bc.ever <- factor(dhs.seg.prov$bc.ever)
+
+seg.bc.ever <- dhs.seg.prov %>% 
+  filter(bc.ever != "NA") 
+
+seg.bc.ever.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= seg.bc.ever)
+seg.bc.ever <- svytable(~k3 + bc.ever, design = seg.bc.ever.des)
+seg.bc.ever <- as.data.frame(seg.bc.ever)
+
+seg.bc.ever <- seg.bc.ever %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.bc.ever$bc.ever <- factor(seg.bc.ever$bc.ever, levels = c("0", "1"),labels = c("No", "Yes"))
+
+ggplot(seg.bc.ever, aes(x = k3, y = perc, fill = bc.ever)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Birth Complication for Last Birth\nor Next-to-last Birth", title = "Whether Had Birth Complication by Segment") +
+  scale_fill_manual(values = c("#b4adaa","#03859b","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 8))
+
+seg.bc.ever
+
+#Plot 2
+seg.bc.new <- dhs.seg.prov %>% 
+  filter(bc.new != "NA") 
+
+seg.bc.new.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= seg.bc.new)
+seg.bc.new <- svytable(~k3 + bc.new, design = seg.bc.new.des)
+seg.bc.new <- as.data.frame(seg.bc.new)
+
+seg.bc.new <- seg.bc.new %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.bc.new$bc.new <- factor(seg.bc.new$bc.new, levels = c("No birth complication", "Prolonged labor", "Other types of birth complications"),labels = c("No birth complication", "With prolonged labor", "Other types of birth complications"))
+
+ggplot(seg.bc.new, aes(x = k3, y = perc, fill = bc.new)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Birth Complication for Last Birth\nor Next-to-last Birth", title = "Whether Had Birth Complication by Segment") +
+  scale_fill_manual(values = c("#03859b","#bf281c","#386CB0")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 8))
+
+seg.bc.new
+```
+
+### 3.5. Use of modern FP
+```{r, echo=TRUE}
+#This question was asked to all women.
+  #0=	not using (pregnant women were coded as 0 too), 1=pill, 2=IUD, 3=injections 3 month, 5=male condom, 6=female sterilization, 7=male sterilization, 8=periodic abstinence, 9=withdrawal, 10=other traditional, 11=implants/norplant, 13=lactational amenorrhea (lam), 19=injection 1 months, 
+  #Note that some DHS standard FP options were not used or chosen in IND suryve, like: 14=female condom, 15=foam or jelly, 16=emergency contraception, 17=other modern method, 18=standard days method (sdm), 20=specific method 2
+#table(dhs.seg.prov$v312)
+
+#I categorized it as below:
+  ##Traditional Methods: 8=Periodic abstinence, 9=Withdrawal, 10=Other traditional methods, 13=Lactational amenorrhea 
+  ##Modern Methods:
+    ###Short-acting Methods: 1=Pill, 3=Injections 3 month, 5=Male condom, 19=Injection 1 month 
+    ###Long-acting Methods: 2=IUD, 6=Female sterilization, 7=Male sterilization, 11=Implants/Norplant
+
+#For v359 in Indonesia (used in the last 5 years but not now): 1=pill, 2=IUD, 3=injections 3 month, 5=male condom, 6=female sterilization, 7=male sterilization, 8=periodic abstinence, 9=withdrawal, 10=other traditional, 11=implants/norplant, 13=lactational amenorrhea (lam). Re-categorized as:
+  ##Traditional Methods: 8=Periodic abstinence, 9=Withdrawal, 10=Other traditional methods, 13=Lactational amenorrhea 
+  ##Modern Methods:
+    ###Short-acting Methods: 1=Pill, 3=Injections 3 month, 5=Male condom
+    ###Long-acting Methods: 2=IUD, 6=Female sterilization, 7=Male sterilization, 11=Implants/Norplant
+```
+
+```{r}
+#construct: fp.ever.new
+dhs.seg.prov <- dhs.seg.prov %>% 
+  mutate(fp.now.new = case_when(
+    (v312 == 8 | v312 == 9 | v312 == 10 | v312 == 13) ~ "Traditional FP methods",
+    (v312 == 1 | v312 == 3 | v312 == 5 | v312 == 19) ~ "Modern short-acting",
+    (v312 == 2 | v312 == 6 | v312 == 7 | v312 == 11) ~ "Modern long-acting",
+    (v312 == 0 | is.na(v312)) ~ "Not using",
+  ))
+#table(dhs.seg.prov$fp.now.new)
+#sum(829,2847,5603,322) #9601
+dhs.seg.prov <- dhs.seg.prov %>% 
+  mutate(fp.past.new = case_when(
+    (v359 == 8 | v359 == 9 | v359 == 10 | v359 == 13) ~ "Traditional FP methods",
+    (v359 == 1 | v359 == 3 | v359 == 5) ~ "Modern short-acting",
+    (v359 == 2 | v359 == 6 | v359 == 7 | v359 == 11) ~ "Modern long-acting",
+    (v359 == 0 | is.na(v359)) ~ "Not using",
+  ))
+#table(dhs.seg.prov$fp.past.new)
+#sum(248,2621,6556,176) #9601
+```
+
+```{r}
+#"fp.mod.ever": used modern family planning method now or in the last 5 years and discotinued, binary
+dhs.seg.prov$fp.mod.ever <- factor(dhs.seg.prov$fp.mod.ever)
+
+seg.fp.mod.ever.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.fp.mod.ever <- svytable(~k3 + fp.mod.ever, design = seg.fp.mod.ever.des)
+seg.fp.mod.ever <- as.data.frame(seg.fp.mod.ever)
+
+seg.fp.mod.ever <- seg.fp.mod.ever %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.fp.mod.ever$fp.mod.ever <- factor(seg.fp.mod.ever$fp.mod.ever, levels = c("0", "1"),labels = c("No", "Yes"))
+
+ggplot(seg.fp.mod.ever, aes(x = k3, y = perc, fill = fp.mod.ever)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Use Now or in\nThe Last 5 Years", title = "Distribution of Women by The Use of Modern Family Planning Methods") +
+  scale_fill_manual(values = c("#b4adaa","#03859b","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 8))
+
+seg.fp.mod.ever
+
+#Plot 2
+dhs.seg.prov$fp.now.new <- factor(dhs.seg.prov$fp.now.new)
+
+seg.fp.now.new.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.fp.now.new <- svytable(~k3 + fp.now.new, design = seg.fp.now.new.des)
+seg.fp.now.new <- as.data.frame(seg.fp.now.new)
+
+seg.fp.now.new <- seg.fp.now.new %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.fp.now.new$fp.now.new <- factor(seg.fp.now.new$fp.now.new, levels = c("Modern long-acting", "Modern short-acting", "Traditional FP methods", "Not using"),labels = c("Modern long-acting", "Modern short-acting", "Traditional FP methods", "Not using"))
+
+ggplot(seg.fp.now.new, aes(x = k3, y = perc, fill = fp.now.new)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "FP Method Being Used Now", title = "Distribution of Women by The Current Use of Family Planning Methods") +
+  scale_fill_manual(values = c("#03859b","#9cc2f4", "#386CB0", "#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 8))
+
+seg.fp.now.new
+
+#Plot 3
+dhs.seg.prov$fp.past.new <- factor(dhs.seg.prov$fp.past.new)
+
+seg.fp.past.new.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.fp.past.new <- svytable(~k3 + fp.past.new, design = seg.fp.past.new.des)
+seg.fp.past.new <- as.data.frame(seg.fp.past.new)
+
+seg.fp.past.new <- seg.fp.past.new %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.fp.past.new$fp.past.new <- factor(seg.fp.past.new$fp.past.new, levels = c("Modern long-acting", "Modern short-acting", "Traditional FP methods", "Not using"),labels = c("Modern long-acting", "Modern short-acting", "Traditional FP methods", "Not using"))
+
+ggplot(seg.fp.past.new, aes(x = k3, y = perc, fill = fp.past.new)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "FP Method Used In The Last 5 Years", title = "Distribution of Women by The Use of Family Planning Methods In The Past 5 Years") +
+  scale_fill_manual(values = c("#03859b","#9cc2f4", "#386CB0", "#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 8))
+
+seg.fp.past.new
+```
+
+### 3.6. Baby health check
+```{r, echo=TRUE}
+#This question was asked to women who had child born in the last 5 years
+```
+
+```{r}
+### "baby.hlthck": binary, first postnatal check on child in facility or within 2 months of discharge
+dhs.seg.prov$baby.hlthck <- factor(dhs.seg.prov$baby.hlthck)
+
+seg.baby.hlthck <- dhs.seg.prov %>% 
+  filter(baby.hlthck != "NA") 
+
+seg.baby.hlthck.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= seg.baby.hlthck)
+seg.baby.hlthck <- svytable(~k3 + baby.hlthck, design = seg.baby.hlthck.des)
+seg.baby.hlthck <- as.data.frame(seg.baby.hlthck)
+
+seg.baby.hlthck <- seg.baby.hlthck %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.baby.hlthck$baby.hlthck <- factor(seg.baby.hlthck$baby.hlthck, levels = c("0", "1"),labels = c("No", "Yes"))
+
+ggplot(seg.baby.hlthck, aes(x = k3, y = perc, fill = baby.hlthck)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "First Postnatal Check on Facility\norWithin 2 Months of Discharge", title = "Baby Had the First Postnatal Check in Facility\n or Within 2 Months of Discarge") +
+  scale_fill_manual(values = c("#b4adaa","#03859b","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 8))
+
+seg.baby.hlthck
+```
+
+### 3.7. Breastfeeding
+```{r}
+#"breastfed": binary, 1 means "still breastfeeding" or "ever breastfed, not currently breastfeeding" (the last born)
+dhs.seg.prov$breastfed <- factor(dhs.seg.prov$breastfed)
+
+seg.breastfed <- dhs.seg.prov %>% 
+  filter(breastfed != "NA") 
+
+seg.breastfed.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= seg.breastfed)
+seg.breastfed <- svytable(~k3 + breastfed, design = seg.breastfed.des)
+seg.breastfed <- as.data.frame(seg.breastfed)
+
+seg.breastfed <- seg.breastfed %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.breastfed$breastfed <- factor(seg.breastfed$breastfed, levels = c("0", "1"),labels = c("No", "Yes"))
+
+ggplot(seg.breastfed, aes(x = k3, y = perc, fill = breastfed)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Breastfeeding", title = "The Last Born Baby Currently or Ever Been Breastfed") +
+  scale_fill_manual(values = c("#b4adaa","#03859b","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 8))
+
+seg.breastfed
+```
+
+### 3.8. Nutrition
+```{r}
+#"low.wgt.last": binary, 1 means underweighted < 2500 g
+dhs.seg.prov$low.wgt.last <- factor(dhs.seg.prov$low.wgt.last)
+
+seg.low.wgt.last <- dhs.seg.prov %>% 
+  filter(low.wgt.last != "NA") 
+
+seg.low.wgt.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= seg.low.wgt.last)
+seg.low.wgt <- svytable(~k3 + low.wgt.last, design = seg.low.wgt.des)
+seg.low.wgt <- as.data.frame(seg.low.wgt)
+
+seg.low.wgt <- seg.low.wgt %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.low.wgt$low.wgt.last <- factor(seg.low.wgt$low.wgt.last, levels = c("0", "1"),labels = c("No", "Yes"))
+
+ggplot(seg.low.wgt, aes(x = k3, y = perc, fill = low.wgt.last)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Low Weight at Birth", title = "Whether The Last Born Baby Having Low Birth Weight (< 2500 g)") +
+  scale_fill_manual(values = c("#b4adaa","#03859b","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 8))
+
+seg.low.wgt
+```
+
+### 3.9. Vaccination
+```{r, echo=TRUE}
+#This was asked to women who had child(ren)
+```
+
+```{r}
+#"zerodose.yn": note that here 0 means all babies had at least some vaccine
+dhs.seg.prov$zerodose.yn <- factor(dhs.seg.prov$zerodose.yn)
+
+seg.zerodose.yn <- dhs.seg.prov %>% 
+  filter(zerodose.yn != "NA") 
+
+seg.zerodose.yn.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= seg.zerodose.yn)
+seg.zerodose.yn <- svytable(~k3 + zerodose.yn, design = seg.zerodose.yn.des)
+seg.zerodose.yn <- as.data.frame(seg.zerodose.yn)
+
+seg.zerodose.yn <- seg.zerodose.yn %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.zerodose.yn$zerodose.yn <- factor(seg.zerodose.yn$zerodose.yn, levels = c("1", "0"),labels = c("Zero dose for at least a baby", "Had some vaccine for all babies"))
+
+ggplot(seg.zerodose.yn, aes(x = k3, y = perc, fill = zerodose.yn)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Dose of Vaccination", title = "Vaccination for Babies") +
+  scale_fill_manual(values = c("#b4adaa","#03859b","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 8))
+
+seg.zerodose.yn
+
+#"dpt1.yn": binary, if had the 1st DTP
+dhs.seg.prov$dpt1.yn <- factor(dhs.seg.prov$dpt1.yn)
+
+seg.dpt1.yn <- dhs.seg.prov %>% 
+  filter(dpt1.yn != "NA") 
+
+seg.dpt1.yn.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= seg.dpt1.yn)
+seg.dpt1.yn <- svytable(~k3 + dpt1.yn, design = seg.dpt1.yn.des)
+seg.dpt1.yn <- as.data.frame(seg.dpt1.yn)
+
+seg.dpt1.yn <- seg.dpt1.yn %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.dpt1.yn$dpt1.yn <- factor(seg.dpt1.yn$dpt1.yn, levels = c("0", "1"),labels = c("No", "Yes"))
+
+ggplot(seg.dpt1.yn, aes(x = k3, y = perc, fill = dpt1.yn)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "The First Dose\nof DPT Vaccine", title = "Whether Had The First Dose of DPT Vaccine for Babies") +
+  scale_fill_manual(values = c("#b4adaa","#03859b","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 8))
+
+seg.dpt1.yn
+```
+
+### 3.10. Child mortality
+```{r}
+#"u1mort.yn": 0 means no child died U1
+#length(unique(dhs.seg.prov$caseid)) #9601
+
+dhs.seg.prov$u1mort.yn <- factor(dhs.seg.prov$u1mort.yn)
+
+seg.u1mort.yn <- dhs.seg.prov %>% 
+  filter(u1mort.yn != "NA") 
+
+seg.u1mort.yn.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= seg.u1mort.yn)
+seg.u1mort.yn <- svytable(~k3 + u1mort.yn, design = seg.u1mort.yn.des)
+seg.u1mort.yn <- as.data.frame(seg.u1mort.yn)
+
+seg.u1mort.yn <- seg.u1mort.yn %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.u1mort.yn$u1mort.yn <- factor(seg.u1mort.yn$u1mort.yn, levels = c("1", "0"),labels = c("At least a child died U1", "No child died U1"))
+
+ggplot(seg.u1mort.yn, aes(x = k3, y = perc, fill = u1mort.yn)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Child Died U1", title = "Whether Had Child Who Died 1 Year Old or Younger") +
+  scale_fill_manual(values = c("#b4adaa","#03859b","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 8))
+
+seg.u1mort.yn
+
+#"u5mort.yn"
+dhs.seg.prov$u5mort.yn <- factor(dhs.seg.prov$u5mort.yn)
+
+seg.u5mort.yn <- dhs.seg.prov %>% 
+  filter(u5mort.yn != "NA") 
+
+seg.u5mort.yn.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= seg.u5mort.yn)
+seg.u5mort.yn <- svytable(~k3 + u5mort.yn, design = seg.u5mort.yn.des)
+seg.u5mort.yn <- as.data.frame(seg.u5mort.yn)
+
+seg.u5mort.yn <- seg.u5mort.yn %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.u5mort.yn$u5mort.yn <- factor(seg.u5mort.yn$u5mort.yn, levels = c("1", "0"),labels = c("At least a child died U5", "No child died U5"))
+
+ggplot(seg.u5mort.yn, aes(x = k3, y = perc, fill = u5mort.yn)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Child Died U1", title = "Whether Had Child Who Died 5 Years Old or Younger") +
+  scale_fill_manual(values = c("#b4adaa","#03859b","#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 8))
+
+seg.u5mort.yn
+```
+
+## 4. Deep Dive: Defining Variables
+```{r, echo=TRUE}
+#In this section, we plot defining variables: they are from the exploratory analysis, in which we examined the associations between ~ 190 variables (from script 4) and the outcome variables. The exploratory analysis (and exploration of the association between some of them and age) eventually suggested 86 unique variables. 
+  ##Note that for the ~ 190 variables, some of them were constructed for the same "vulnerability measures". For instance, there were ~ 4-5 variables contrscuted around number of pregnancies. We constructed multiple variables for the same measure to explore variables cut-offs and compare the overall model fit and patterns.
+
+#These 86 variables were then mapped to the 6 domains (and the respective constructs under the domain), see the spreadhseet named "7_Construct_mapping", Sheet1. Note that a variable may be mapped to multiple constructs or domains. Therefore, in Sheet 1, you will see 98 rows.
+
+#Among the 86 variables, 21 of them were brought to LCA for clustering, based on the results from PCA. The plots for the 21 variables can be found in section 2 above.
+
+#This section will plot the remaining 65, organized by the domain and construct.
+```
+
+### 4.1. Woman and her past experiences
+#### 4.1.1. Partnership and reproductive history
+##### 4.1.1.1. Partnership category (pship.cat)
+```{r}
+#table(dhs.seg.prov$pship.cat) #married/cohab, never,no partner now
+seg.pship.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.pship <- svytable(~k3 + pship.cat, design = seg.pship.des)
+seg.pship <- as.data.frame(seg.pship)
+
+seg.pship <- seg.pship %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.pship$pship.cat <- factor(seg.pship$pship.cat , levels = c("married/cohab","no partner now","never"),labels = c("Married or partner", "No partner now","Never in union"))
+
+ggplot(seg.pship, aes(x = k3, y = perc, fill = pship.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Relationship", title = "Distribution of Women by Relationship Category within Segment") +
+  scale_fill_manual(values = c("#9cc2f4", "#386CB0","#b4adaa", "#03859b", "#b590bf", "#8E24AA", "#bf281c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+  
+seg.pship
+```
+
+##### 4.1.1.2. First sex < 19 yr (early.sex.19)
+```{r}
+#table(dhs.seg.prov$early.sex.19) #0, 1
+seg.early.sex <- dhs.seg.prov %>% 
+  mutate(early.sex = case_when(
+  early.sex.19 == 0 ~ "No",
+  early.sex.19 == 1 ~ "Yes"))
+
+seg.early.sex.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.early.sex)
+seg.early.sex <- svytable(~k3 + early.sex, design = seg.early.sex.des)
+seg.early.sex <- as.data.frame(seg.early.sex)
+
+seg.early.sex <- seg.early.sex %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+ggplot(seg.early.sex, aes(x = k3, y = perc, fill = early.sex)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "First Sex When <19 Years Old", title = "Distribution of Women by Age of The First Sex") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.early.sex
+```
+
+##### 4.1.1.3. First birth < 19 yrs (early.birth.19)
+```{r}
+#table(dhs.seg.prov$early.birth.19) #0,1
+seg.early.birth <- dhs.seg.prov %>% 
+  mutate(early.birth = case_when(
+  early.birth.19 == 0 ~ "No",
+  early.birth.19 == 1 ~ "Yes"))
+
+seg.early.birth.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.early.birth)
+seg.early.birth <- svytable(~k3 + early.birth, design = seg.early.birth.des)
+seg.early.birth <- as.data.frame(seg.early.birth)
+
+seg.early.birth <- seg.early.birth %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+ggplot(seg.early.birth, aes(x = k3, y = perc, fill = early.birth)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "First Birth When <19 Years Old", title = "Distribution of Women by Age of The First Birth") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.early.birth
+```
+
+##### 4.1.1.4. Knowledge on conception (know.conceive)
+```{r, echo=TRUE}
+#This questions comes from Q242: After the birth of a child, can a woman become pregnant before her menstrual period has returned? 0=="no", 1=="yes", 8=="don't know". "Yes" is the correct answer, coded as "1".
+```
+
+```{r}
+#table(dhs.seg.prov$know.conceive) #0, 1
+dhs.seg.prov$know.conceive <- as.factor(dhs.seg.prov$know.conceive)
+
+seg.conceive.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg.prov)
+seg.conceive <- svytable(~k3 + know.conceive, design = seg.conceive.des)
+seg.conceive <- as.data.frame(seg.conceive)
+
+seg.conceive <- seg.conceive %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.conceive$know.conceive <- factor(seg.conceive$know.conceive , levels = c("1","0"),labels = c("Yes","No"))
+
+ggplot(seg.conceive, aes(x = k3, y = perc, fill = know.conceive)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Knowledge of Conception", title = "Distribution of Women by Knowledge of Conception") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.conceive
+```
+
+##### 4.1.1.5. Relationship status (marr.cohab)
+```{r, echo=TRUE}
+#see plots above in 2.1.1. for this. Note that this variable and variable pship.cat (4.1.1.1.) are measuring the same aspect of the woman's life.
+```
+
+#### 4.1.2. Internalized gender norms
+##### 4.1.2.1. Perception of domestic violence (dv.index.2)
+```{r, echo=TRUE}
+#This comes from the question: in your opinion, is a husband justified in hitting or beating his wife in the following situations: v744a: She goes out without telling him; v744b: She neglects the children; v744c: She argues with him; v744d: She refuses to have sex with him; v744e: She burns the food. For each situation, it was coded as "1" if "yes"; then it summed up. The sum ranges from 0 to 5. If the sum is 2, 3, 4, 5, it was coded as "1" for dv.index.2. That is saying, "Yes" here means the woman perceives the domestic violence as justified
+```
+
+```{r}
+#table(dhs.seg.prov$dv.index.2) #0,1
+seg.dv.index <- dhs.seg.prov %>% 
+  mutate(dv.index = case_when(
+  dv.index.2 == 0 ~ "No",
+  dv.index.2 == 1 ~ "Yes"))
+
+seg.dv.index.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=seg.dv.index)
+seg.dv.index <- svytable(~k3 + dv.index, design = seg.dv.index.des)
+seg.dv.index <- as.data.frame(seg.dv.index)
+
+seg.dv.index <- seg.dv.index %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+ggplot(seg.dv.index, aes(x = k3, y = perc, fill = dv.index)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Perceive Domestic Violence as Justified", title = "Distribution of Women by Perception of Domestic Violence") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.dv.index
+```
+
+#### 4.1.3. Media exposure
+##### 4.1.3.1. Newspaper (freq.newsp)
+```{r}
+#table(dhs.seg.prov$freq.newsp)
+#0(not at all), 1 (less than once a week), 2(at least once a week)
+dhs.seg.prov$freq.newsp <- as.factor(dhs.seg.prov$freq.newsp)
+
+seg.newsp.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg.prov)
+seg.newsp <- svytable(~k3 + freq.newsp, design = seg.newsp.des)
+seg.newsp <- as.data.frame(seg.newsp)
+
+seg.newsp <- seg.newsp %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.newsp$freq.newsp <- factor(seg.newsp$freq.newsp , levels = c("0","1","2"),labels = c("Not at all", "Less than once a week", "At least once a week"))
+
+ggplot(seg.newsp, aes(x = k3, y = perc, fill = freq.newsp)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Frequency of Reading Newspaper", title = "Distribution of Women by Exposure to Newspaper") +
+  scale_fill_manual(values = c("#b4adaa","#9cc2f4","#03859b")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+
+seg.newsp
+```
+
+##### 4.1.3.2. Radio (freq.rad)
+```{r}
+#table(dhs.seg.prov$freq.rad)
+#0(not at all), 1 (less than once a week), 2(at least once a week)
+dhs.seg.prov$freq.rad <- as.factor(dhs.seg.prov$freq.rad)
+
+seg.rad.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg.prov)
+seg.rad <- svytable(~k3 + freq.rad, design = seg.rad.des)
+seg.rad <- as.data.frame(seg.rad)
+
+seg.rad <- seg.rad %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.rad$freq.rad <- factor(seg.rad$freq.rad , levels = c("0","1","2"),labels = c("Not at all", "Less than once a week", "At least once a week"))
+
+ggplot(seg.rad, aes(x = k3, y = perc, fill = freq.rad)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Frequency of Listening to Radio", title = "Distribution of Women by Exposure to Radio") +
+  scale_fill_manual(values = c("#b4adaa","#9cc2f4","#03859b")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+
+seg.rad
+```
+
+##### 4.1.3.3. TV (freq.tv)
+```{r}
+#table(dhs.seg.prov$freq.tv)
+#0(not at all), 1 (less than once a week), 2(at least once a week)
+dhs.seg.prov$freq.tv <- as.factor(dhs.seg.prov$freq.tv)
+
+seg.tv.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg.prov)
+seg.tv <- svytable(~k3 + freq.tv, design = seg.tv.des)
+seg.tv <- as.data.frame(seg.tv)
+
+seg.tv <- seg.tv %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.tv$freq.tv <- factor(seg.tv$freq.tv , levels = c("0","1","2"),labels = c("Not at all", "Less than once a week", "At least once a week"))
+
+ggplot(seg.tv, aes(x = k3, y = perc, fill = freq.tv)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Frequency of Watching TV", title = "Distribution of Women by Exposure to TV") +
+  scale_fill_manual(values = c("#b4adaa","#9cc2f4","#03859b")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+
+seg.tv
+```
+
+##### 4.1.3.4. Internet (freq.net)
+```{r}
+#table(dhs.seg.prov$freq.net)
+#0(not at all), 1 (less than once a week), 2(at least once a week)
+dhs.seg.prov$freq.net <- as.factor(dhs.seg.prov$freq.net)
+
+seg.net.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg.prov)
+seg.net <- svytable(~k3 + freq.net, design = seg.net.des)
+seg.net <- as.data.frame(seg.net)
+
+seg.net <- seg.net %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.net$freq.net <- factor(seg.net$freq.net , levels = c("0","1","2"),labels = c("Not at all", "Less than once a week", "At least once a week"))
+
+ggplot(seg.net, aes(x = k3, y = perc, fill = freq.net)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Frequency of Using Internet", title = "Distribution of Women by Exposure to Internet") +
+  scale_fill_manual(values = c("#b4adaa","#9cc2f4","#03859b")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+
+seg.net
+```
+
+#### 4.1.4. Wellbeing & mental health
+##### 4.1.4.1. Smoking habit (smoke)
+```{r, echo=TRUE}
+#This comes crom the question asking women's smoking habit: 0=="do not smoke", 1=="every day", 2=="some days". For this variable, it was coded as: 0 == do not smoke, 1 == smoke
+```
+
+```{r}
+#table(dhs.seg.prov$smoke) #0, 1
+dhs.seg.prov$smoke <- as.factor(dhs.seg.prov$smoke)
+
+seg.smoke.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg.prov)
+seg.smoke <- svytable(~k3 + smoke, design = seg.smoke.des)
+seg.smoke <- as.data.frame(seg.smoke)
+
+seg.smoke <- seg.smoke %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.smoke$smoke <- factor(seg.smoke$smoke , levels = c("0","1"),labels = c("No","Yes"))
+
+ggplot(seg.smoke, aes(x = k3, y = perc, fill = smoke)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Smoking Habit", title = "Distribution of Women by Smoking Habit") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.smoke
+```
+
+#### 4.1.5. Natal family structure
+##### 4.1.5. Women's education (ed.lev.cat1)
+```{r, echo=TRUE}
+#see plot above in 2.2.1. for this.
+```
+
+### 4.2. Household relationships
+#### 4.2.1. Household structure
+##### 4.2.1.1. Partner absence (partner.absent)
+```{r}
+#table(dhs.seg.prov$partner.absent) #Not in union, No, Yes
+#class(dhs.seg.prov$partner.absent) #character
+
+seg.absent.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg.prov)
+seg.absent <- svytable(~k3 + partner.absent, design = seg.absent.des)
+seg.absent <- as.data.frame(seg.absent)
+
+seg.absent <- seg.absent %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.absent$partner.absent <- factor(seg.absent$partner.absent , levels = c("Not in union", "No", "Yes"),labels = c("Not in union", "No", "Yes"))
+
+ggplot(seg.absent, aes(x = k3, y = perc, fill = partner.absent)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Partner Absence", title = "Distribution of Women by Partner Absence") +
+  scale_fill_manual(values = c("#b4adaa","#03859b","#9cc2f4")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.absent
+```
+
+##### 4.2.1.2. Number of biological children living at home (num.kids.house.2plus)
+```{r}
+#table(dhs.seg.prov$num.kids.house.2plus) #0, 1
+dhs.seg.prov$num.kids.house.2plus <- as.factor(dhs.seg.prov$num.kids.house.2plus)
+
+seg.homekid.2plus.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg.prov)
+seg.homekid.2plus <- svytable(~k3 + num.kids.house.2plus, design = seg.homekid.2plus.des)
+seg.homekid.2plus <- as.data.frame(seg.homekid.2plus)
+
+seg.homekid.2plus <- seg.homekid.2plus %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.homekid.2plus$num.kids.house.2plus <- factor(seg.homekid.2plus$num.kids.house.2plus , levels = c("0","1"),labels = c("0-1","2+"))
+
+ggplot(seg.homekid.2plus, aes(x = k3, y = perc, fill = num.kids.house.2plus)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Numer of Children Living At Home", title = "Distribution of Women by Number of Children Living At Home") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.homekid.2plus
+```
+
+##### 4.2.1.3. Number of children <= 5 yr living at home (num.under5.cat)
+```{r}
+#table(dhs.seg.prov$num.under5.cat) # 0     1     2    3+ 
+#class(dhs.seg.prov$num.under5.cat)
+dhs.seg.prov$num.under5.cat <- as.factor(dhs.seg.prov$num.under5.cat)
+
+seg.homeu5.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg.prov)
+seg.homeu5 <- svytable(~k3 + num.under5.cat, design = seg.homeu5.des)
+seg.homeu5 <- as.data.frame(seg.homeu5)
+
+seg.homeu5 <- seg.homeu5 %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+ggplot(seg.homeu5, aes(x = k3, y = perc, fill = num.under5.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Numer of Children\nAged <= 5 Living At Home", title = "Distribution of Women by\nNumber of Children (<= 5 Years Old) Living At Home") +
+  scale_fill_manual(values = c("#9cc2f4","#03859b","#b590bf","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.homeu5
+```
+
+##### 4.2.1.4. Number of children U15 (num.under15.2plus)
+```{r, echo=TRUE}
+# see polts above on this in 2.1.4.
+```
+
+##### 4.2.1.5. Ratio of children U5 at home to women >=2 (hh.kidwom.rat.2plus)
+```{r}
+#table(dhs.seg.prov$hh.kidwom.rat.2plus) #0, 1
+dhs.seg.prov$hh.kidwom.rat.2plus <- as.factor(dhs.seg.prov$hh.kidwom.rat.2plus)
+
+seg.kidwom.rat.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg.prov)
+seg.kidwom.rat <- svytable(~k3 + hh.kidwom.rat.2plus, design = seg.kidwom.rat.des)
+seg.kidwom.rat <- as.data.frame(seg.kidwom.rat)
+
+seg.kidwom.rat <- seg.kidwom.rat %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.kidwom.rat$hh.kidwom.rat.2plus <- factor(seg.kidwom.rat$hh.kidwom.rat.2plus , levels = c("0","1"),labels = c("<0",">=2"))
+
+ggplot(seg.kidwom.rat, aes(x = k3, y = perc, fill = hh.kidwom.rat.2plus)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Ration of Children U5 to Women (15-49) At Home", title = "Distribution of Women by Children-Women Ration") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.kidwom.rat
+```
+
+##### 4.2.1.6. Relationship status (marr.cohab)
+```{r, echo=TRUE}
+#see plots above in 2.1.1. for this. Note that this variable and variable pship.cat (4.1.1.1.) are measuring the same aspect of the woman's life.
+```
+
+#### 4.2.2. Decision-making
+##### 4.2.2.1. Joined decision on women's own income (jd.ownincome.cat)
+```{r}
+#table(dhs.seg.prov$jd.ownincome.cat) #No, Not in union, Not paid in cash or not working, Yes
+dhs.seg.prov$jd.ownincome.cat <- as.factor(dhs.seg.prov$jd.ownincome.cat)
+
+seg.jd.ownincome.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.jd.ownincome <- svytable(~k3 + jd.ownincome.cat, design = seg.jd.ownincome.des)
+seg.jd.ownincome <- as.data.frame(seg.jd.ownincome)
+
+seg.jd.ownincome <- seg.jd.ownincome %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.jd.ownincome$jd.ownincome.cat <- factor(seg.jd.ownincome$jd.ownincome.cat, levels = c("Yes","No", "Not paid in cash or not working","Not in union"),labels = c("Yes","No", "Not paid in cash or not working","Not in union"))
+
+ggplot(seg.jd.ownincome, aes(x = k3, y = perc, fill = jd.ownincome.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Joined Decision-making Power on Women's Income", title = "Distribution of Women by Joined Decision-making Power on Women's Income") +
+  scale_fill_manual(values = c("#03859b","#386CB0","#9cc2f4","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.jd.ownincome
+```
+
+##### 4.2.2.2. Women's decision on own income (wd.ownincome.cat)
+```{r, echo=TRUE}
+#see plot above in 2.2.2. for this.
+```
+
+##### 4.2.2.3. Joined decision on large purchase (jd.lrgpur.cat)
+```{r}
+#table(dhs.seg.prov$jd.lrgpur.cat) #No, Not in union, Yes
+dhs.seg.prov$jd.lrgpur.cat <- as.factor(dhs.seg.prov$jd.lrgpur.cat)
+
+seg.jd.lrgpur.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.jd.lrgpur <- svytable(~k3 + jd.lrgpur.cat, design = seg.jd.lrgpur.des)
+seg.jd.lrgpur <- as.data.frame(seg.jd.lrgpur)
+
+seg.jd.lrgpur <- seg.jd.lrgpur %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.jd.lrgpur$jd.lrgpur.cat <- factor(seg.jd.lrgpur$jd.lrgpur.cat, levels = c("Yes","No", "Not in union"),labels = c("Yes","No","Not in union"))
+
+ggplot(seg.jd.lrgpur, aes(x = k3, y = perc, fill = jd.lrgpur.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Joined Decision-making Power\non Large Purchase", title = "Distribution of Women by Joined Decision-making Power\non Large Purchase") +
+  scale_fill_manual(values = c("#03859b","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.jd.lrgpur
+```
+
+##### 4.2.2.4. Women's decision on large purchase (wd.lrgpur.cat)
+```{r}
+#table(dhs.seg.prov$wd.lrgpur.cat) #No, Not in union, Yes
+dhs.seg.prov$wd.lrgpur.cat <- as.factor(dhs.seg.prov$wd.lrgpur.cat)
+
+seg.wd.lrgpur.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.wd.lrgpur <- svytable(~k3 + wd.lrgpur.cat, design = seg.wd.lrgpur.des)
+seg.wd.lrgpur <- as.data.frame(seg.wd.lrgpur)
+
+seg.wd.lrgpur <- seg.wd.lrgpur %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.wd.lrgpur$wd.lrgpur.cat <- factor(seg.wd.lrgpur$wd.lrgpur.cat, levels = c("Yes","No", "Not in union"),labels = c("Yes","No","Not in union"))
+
+ggplot(seg.wd.lrgpur, aes(x = k3, y = perc, fill = wd.lrgpur.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Women's Decision-making Power\non Large Purchase", title = "Distribution of Women by Women's Decision-making Power\non Large Purchase") +
+  scale_fill_manual(values = c("#03859b","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.wd.lrgpur
+```
+
+##### 4.2.2.5. Joined decision on partner's earning (jd.money.cat)
+```{r}
+#table(dhs.seg.prov$jd.money.cat) #No, Not in union, Yes
+dhs.seg.prov$jd.money.cat <- as.factor(dhs.seg.prov$jd.money.cat)
+
+seg.jd.money.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.jd.money <- svytable(~k3 + jd.money.cat, design = seg.jd.money.des)
+seg.jd.money <- as.data.frame(seg.jd.money)
+
+seg.jd.money <- seg.jd.money %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.jd.money$jd.money.cat <- factor(seg.jd.money$jd.money.cat, levels = c("Yes","No", "Not in union"),labels = c("Yes","No","Not in union"))
+
+ggplot(seg.jd.money, aes(x = k3, y = perc, fill = jd.money.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Joined Decision-making Power\non Partner's Income", title = "Distribution of Women by Joined Decision-making Power\non Partner's Income") +
+  scale_fill_manual(values = c("#03859b","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.jd.money
+```
+
+##### 4.2.2.6. Women's decision on partner's earning (wd.money.cat)
+```{r}
+#table(dhs.seg.prov$wd.money.cat) #No, Not in union, Yes
+dhs.seg.prov$wd.money.cat <- as.factor(dhs.seg.prov$wd.money.cat)
+
+seg.wd.money.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.wd.money <- svytable(~k3 + wd.money.cat, design = seg.wd.money.des)
+seg.wd.money <- as.data.frame(seg.wd.money)
+
+seg.wd.money <- seg.wd.money %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.wd.money$wd.money.cat <- factor(seg.wd.money$wd.money.cat, levels = c("Yes","No", "Not in union"),labels = c("Yes","No","Not in union"))
+
+ggplot(seg.wd.money, aes(x = k3, y = perc, fill = wd.money.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Women's Decision-making Power\non Partner's Income", title = "Distribution of Women by Joined Decision-making Power\non Partner's Income") +
+  scale_fill_manual(values = c("#03859b","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.wd.money
+```
+
+##### 4.2.2.7. Joined decision on women's health (jd.hlth.cat)
+```{r, echo=TRUE}
+#see plot above in 2.2.3. for this.
+```
+
+##### 4.2.2.8. Women's decision on their health (wd.hlth.cat)
+```{r}
+#table(dhs.seg.prov$wd.hlth.cat) 
+dhs.seg.prov$wd.hlth.cat <- as.factor(dhs.seg.prov$wd.hlth.cat)
+
+seg.wd.hlth.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.wd.hlth <- svytable(~k3 + wd.hlth.cat, design = seg.wd.hlth.des)
+seg.wd.hlth <- as.data.frame(seg.wd.hlth)
+
+seg.wd.hlth <- seg.wd.hlth %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.wd.hlth$wd.hlth.cat <- factor(seg.wd.hlth$wd.hlth.cat, levels = c("Yes","No", "Not in union"),labels = c("Yes","No","Not in union"))
+
+ggplot(seg.wd.hlth, aes(x = k3, y = perc, fill = wd.hlth.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Women's Decision-making\non Own Healthcare", title = "Distribution of Women by Women's Decision-making Power\non Own Healthcare") +
+  scale_fill_manual(values = c("#03859b","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.wd.hlth
+```
+
+##### 4.2.2.9. Joined decision on FP (jd.fp.cat)
+```{r}
+#table(dhs.seg.prov$jd.fp.cat) #No, Not in union, Yes
+dhs.seg.prov$jd.fp.cat <- as.factor(dhs.seg.prov$jd.fp.cat)
+
+seg.jd.fp.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.jd.fp <- svytable(~k3 + jd.fp.cat, design = seg.jd.fp.des)
+seg.jd.fp <- as.data.frame(seg.jd.fp)
+
+seg.jd.fp <- seg.jd.fp %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.jd.fp$jd.fp.cat <- factor(seg.jd.fp$jd.fp.cat, levels = c("Yes", "Pregnant", "No", "Not in union"),labels = c("Yes", "Pregnant", "No", "Not in union"))
+
+ggplot(seg.jd.fp, aes(x = k3, y = perc, fill = jd.fp.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Joined Decision-making Power\non Family Planning", title = "Distribution of Women by Joined Decision-making Power\non Family Planning") +
+  scale_fill_manual(values = c("#03859b","#b590bf","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.jd.fp
+```
+
+##### 4.2.2.10. Women's decision on FP (wd.fp.cat)
+```{r}
+#table(dhs.seg.prov$wd.fp.cat) #No, Not in union, Yes, Pregnant
+dhs.seg.prov$wd.fp.cat <- as.factor(dhs.seg.prov$wd.fp.cat)
+
+seg.wd.fp.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.wd.fp <- svytable(~k3 + wd.fp.cat, design = seg.wd.fp.des)
+seg.wd.fp <- as.data.frame(seg.wd.fp)
+
+seg.wd.fp <- seg.wd.fp %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.wd.fp$wd.fp.cat <- factor(seg.wd.fp$wd.fp.cat, levels = c("Yes", "Pregnant", "No", "Not in union"),labels = c("Yes", "Pregnant", "No", "Not in union"))
+
+ggplot(seg.wd.fp, aes(x = k3, y = perc, fill = wd.fp.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Women's Decision-making Power\non Family Planning", title = "Distribution of Women by Their Decision-making Power\non Family Planning") +
+  scale_fill_manual(values = c("#03859b","#b590bf","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.wd.fp
+```
+
+##### 4.2.2.11. Joined decision on visiting family members (jd.visit.cat)
+```{r}
+#table(dhs.seg.prov$jd.visit.cat) #No, Not in union, Yes
+dhs.seg.prov$jd.visit.cat <- as.factor(dhs.seg.prov$jd.visit.cat)
+
+seg.jd.visit.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.jd.visit <- svytable(~k3 + jd.visit.cat, design = seg.jd.visit.des)
+seg.jd.visit <- as.data.frame(seg.jd.visit)
+
+seg.jd.visit <- seg.jd.visit %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.jd.visit$jd.visit.cat <- factor(seg.jd.visit$jd.visit.cat, levels = c("Yes", "No", "Not in union"),labels = c("Yes", "No", "Not in union"))
+
+ggplot(seg.jd.visit, aes(x = k3, y = perc, fill = jd.visit.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Joined Decision-making Power\non Visiting Family Members", title = "Distribution of Women by Joined Decision-making Power\non Visiting Family Members") +
+  scale_fill_manual(values = c("#03859b","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.jd.visit
+```
+
+##### 4.2.2.12. Women's decision on visiting family members (wd.visit.cat)
+```{r}
+#table(dhs.seg.prov$wd.visit.cat) #No, Not in union, Yes
+dhs.seg.prov$wd.visit.cat <- as.factor(dhs.seg.prov$wd.visit.cat)
+
+seg.wd.visit.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.wd.visit <- svytable(~k3 + wd.visit.cat, design = seg.wd.visit.des)
+seg.wd.visit <- as.data.frame(seg.wd.visit)
+
+seg.wd.visit <- seg.wd.visit %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.wd.visit$wd.visit.cat <- factor(seg.wd.visit$wd.visit.cat, levels = c("Yes", "No", "Not in union"),labels = c("Yes", "No", "Not in union"))
+
+ggplot(seg.wd.visit, aes(x = k3, y = perc, fill = wd.visit.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Women's Decision-making Power\non Visiting Family Members", title = "Distribution of Women by Women's Decision-making Power\non Visiting Family Members") +
+  scale_fill_manual(values = c("#03859b","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.wd.visit
+```
+
+##### 4.2.2.13. Joined decision index (jd.index.cat)
+```{r, echo=TRUE}
+#for decision-making index, out of the 6 scenarios, we grouped it into "1-3" (e.g. "yes" in making decision in 1-3 scenarios), "4-6", "not in union", and "none"
+#one scenario is not included above, which is about childnre's health - it shows low overall model fit and unclear patterns during exploratory analysis.
+
+#from the following 2 plots, we can see that joint decision-making does not enhance women's decision-making autonomy.
+```
+
+```{r}
+#table(dhs.seg.prov$jd.index.cat) #Four to six,None, Not in union, One to three 
+dhs.seg.prov$jd.index.cat <- as.factor(dhs.seg.prov$jd.index.cat)
+
+seg.jd.index.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.jd.index <- svytable(~k3 + jd.index.cat, design = seg.jd.index.des)
+seg.jd.index <- as.data.frame(seg.jd.index)
+
+seg.jd.index <- seg.jd.index %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.jd.index$jd.index.cat <- factor(seg.jd.index$jd.index.cat, levels = c("Four to six", "One to three", "None", "Not in union"),labels = c("Four to six", "One to three", "None", "Not in union"))
+
+ggplot(seg.jd.index, aes(x = k3, y = perc, fill = jd.index.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Joined Decision-making Power", title = "Distribution of Women by Joined Decision-making Power") +
+  scale_fill_manual(values = c("#03859b","#9cc2f4","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.jd.index
+```
+
+##### 4.2.2.14. Women's decision index (wd.index.cat)
+```{r}
+#table(dhs.seg.prov$wd.index.cat) #Four to six,None, Not in union, One to three 
+dhs.seg.prov$wd.index.cat <- as.factor(dhs.seg.prov$wd.index.cat)
+
+seg.wd.index.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.wd.index <- svytable(~k3 + wd.index.cat, design = seg.wd.index.des)
+seg.wd.index <- as.data.frame(seg.wd.index)
+
+seg.wd.index <- seg.wd.index %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.wd.index$wd.index.cat <- factor(seg.wd.index$wd.index.cat, levels = c("Four to six", "One to three", "None", "Not in union"),labels = c("Four to six", "One to three", "None", "Not in union"))
+
+ggplot(seg.wd.index, aes(x = k3, y = perc, fill = wd.index.cat)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Women's Decision-making Power", title = "Distribution of Women by Women's Decision-making Power") +
+  scale_fill_manual(values = c("#03859b","#9cc2f4","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.wd.index
+```
+
+#### 4.2.3. Power dynamics and support
+##### 4.2.3.1. Able to refuse sex (refuse.sex)
+```{r, echo=TRUE}
+#note from script 4:
+  ##refuse sex: from question s714A: Can you say 'no' to your husband/partner if you don't want to have sexual intercourse? question s714B: Can you ask your husband/partner to use condom? (yes/no/don't know). Cannot find the recoded variable name from the standard recode mannual, but checked the variable named after the question number (e.g. s714a, s714b, etc.), seems matched.
+
+  ##summary(IR$s714a) #12428 NAs #for v501, "never in union" is 12701, more than the NAs here. Looks like some "never in union" ppl actually answered this question of 714. Group the remaining as "Not partnered" instead of NAs for the next step, incl. dk
+
+  ##ask condom: from s714b
+```
+
+```{r}
+#table(dhs.seg.prov$refuse.sex) # No, Not partnered, Yes
+dhs.seg.prov$refuse.sex <- as.factor(dhs.seg.prov$refuse.sex)
+
+seg.refuse.sex.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.refuse.sex <- svytable(~k3 + refuse.sex, design = seg.refuse.sex.des)
+seg.refuse.sex <- as.data.frame(seg.refuse.sex)
+
+seg.refuse.sex <- seg.refuse.sex %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.refuse.sex$refuse.sex <- factor(seg.refuse.sex$refuse.sex, levels = c("Yes", "No", "Not partnered"),labels = c("Yes", "No", "Not partnered or not sure"))
+
+ggplot(seg.refuse.sex, aes(x = k3, y = perc, fill = refuse.sex)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Women's Power to Refuse Sex", title = "Distribution of Women by Power of Refusing Sex") +
+  scale_fill_manual(values = c("#03859b","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.refuse.sex
+```
+
+##### 4.2.3.2. Able to ask for using condom (ask.condom)
+```{r}
+#table(dhs.seg.prov$ask.condom) # No, Not partnered, Yes
+dhs.seg.prov$ask.condom <- as.factor(dhs.seg.prov$ask.condom)
+
+seg.ask.condom.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.ask.condom <- svytable(~k3 + ask.condom, design = seg.ask.condom.des)
+seg.ask.condom <- as.data.frame(seg.ask.condom)
+
+seg.ask.condom <- seg.ask.condom %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.ask.condom$ask.condom <- factor(seg.ask.condom$ask.condom, levels = c("Yes", "No", "Not partnered"),labels = c("Yes", "No", "Not partnered or not sure"))
+
+ggplot(seg.ask.condom, aes(x = k3, y = perc, fill = ask.condom)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Women's Power to Ask Partner to Use Condom", title = "Distribution of Women by Power of Asking for Using Condom") +
+  scale_fill_manual(values = c("#03859b","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.ask.condom
+```
+
+##### 4.2.3.3. Able to talk about HIV (talk.hiv)
+```{r}
+#table(dhs.seg.prov$talk.hiv) # No, Not partnered, Yes
+dhs.seg.prov$talk.hiv <- as.factor(dhs.seg.prov$talk.hiv)
+
+seg.talk.hiv.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.talk.hiv <- svytable(~k3 + talk.hiv, design = seg.talk.hiv.des)
+seg.talk.hiv <- as.data.frame(seg.talk.hiv)
+
+seg.talk.hiv <- seg.talk.hiv %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.talk.hiv$talk.hiv <- factor(seg.talk.hiv$talk.hiv, levels = c("Yes", "No", "Not partnered"),labels = c("Yes", "No", "Not partnered"))
+
+ggplot(seg.talk.hiv, aes(x = k3, y = perc, fill = talk.hiv)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Able to Talk About HIV with Partner", title = "Distribution of Women by Ability of Discussing HIV with Partner") +
+  scale_fill_manual(values = c("#03859b","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.talk.hiv
+```
+
+##### 4.2.3.4. Getting permission being a perceived barrier (med.permis)
+```{r}
+#table(dhs.seg.prov$med.permis) #0(46416), 1(2892)
+dhs.seg.prov$med.permis <- as.factor(dhs.seg.prov$med.permis)
+
+seg.permis.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.permis <- svytable(~k3 + med.permis, design = seg.permis.des)
+seg.permis <- as.data.frame(seg.permis)
+
+seg.permis <- seg.permis %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.permis$med.permis <- factor(seg.permis$med.permis, levels = c("0", "1"),labels = c("No", "Yes"))
+
+ggplot(seg.permis, aes(x = k3, y = perc, fill = med.permis)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Getting Permission to Get Healthcare Is\nPerceived As A Barrier", title = "Distribution of Women by Perceived Barrier") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.permis
+```
+
+##### 4.2.3.5. Highest years of edu in HH (highestyearsedinHH.7plus)
+```{r, echo=TRUE}
+#see plot in 2.1.6. for this.
+```
+
+### 4.3. Household economics and living conditions
+#### 4.3.1. Economic condition
+##### 4.3.1.1. Partner's work (partner.working)
+```{r}
+#table(dhs.seg.prov$partner.working) #Not working or no partner, Worked last 12 months, Worked last 7 days
+dhs.seg.prov$partner.working <- as.factor(dhs.seg.prov$partner.working)
+
+seg.partner.working.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.partner.working <- svytable(~k3 + partner.working, design = seg.partner.working.des)
+seg.partner.working <- as.data.frame(seg.partner.working)
+
+seg.partner.working <- seg.partner.working %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.partner.working$partner.working <- factor(seg.partner.working$partner.working, levels = c("Worked last 7 days", "Worked last 12 months", "Not working or no partner"),labels = c("Worked last 7 days", "Worked last 12 months", "Not working or no partner"))
+
+ggplot(seg.partner.working, aes(x = k3, y = perc, fill = partner.working)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Partner's Working Status", title = "Distribution of Women by Partner's Working Status") +
+  scale_fill_manual(values = c("#03859b","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.partner.working
+```
+
+##### 4.3.1.2. Women's work type (work.type.new)
+```{r}
+#table(dhs.seg.prov$work.type.new) #Agricultural, Not working, Other types, Professional
+
+dhs.seg.prov$work.type.new <- as.factor(dhs.seg.prov$work.type.new)
+
+seg.work.type.new.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.work.type.new <- svytable(~k3 + work.type.new, design = seg.work.type.new.des)
+seg.work.type.new <- as.data.frame(seg.work.type.new)
+
+seg.work.type.new <- seg.work.type.new %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.work.type.new$work.type.new <- factor(seg.work.type.new$work.type.new, levels = c("Agricultural", "Professional", "Other types", "Not working"),labels = c("Agricultural", "Professional", "Other types", "Not working"))
+
+ggplot(seg.work.type.new, aes(x = k3, y = perc, fill = work.type.new)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Women's Work Type", title = "Distribution of Women by Type of Work") +
+  scale_fill_manual(values = c("#03859b","#9cc2f4","#b590bf","#386CB0")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.work.type.new
+```
+
+##### 4.3.1.3. Bank account ownership for women (women.bank.acct)
+```{r}
+#table(dhs.seg.prov$women.bank.acct) #0,1
+dhs.seg.prov$women.bank.acct <- as.factor(dhs.seg.prov$women.bank.acct)
+
+seg.wmbank.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.wmbank <- svytable(~k3 + women.bank.acct, design = seg.wmbank.des)
+seg.wmbank <- as.data.frame(seg.wmbank)
+
+seg.wmbank <- seg.wmbank %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.wmbank$women.bank.acct <- factor(seg.wmbank$women.bank.acct, levels = c("1","0"),labels = c( "Yes", "No"))
+
+ggplot(seg.wmbank, aes(x = k3, y = perc, fill = women.bank.acct)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Owning A Bank Account For Theirselves", title = "Distribution of Women by Ownership of A Bank Account For Self") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.wmbank
+```
+
+##### 4.3.1.4. Asset: Electicity (hh.electricity)
+```{r}
+#table(dhs.seg.prov$hh.electricity) #0,1
+dhs.seg.prov$hh.electricity <- as.factor(dhs.seg.prov$hh.electricity)
+
+seg.electricity.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.electricity <- svytable(~k3 + hh.electricity, design = seg.electricity.des)
+seg.electricity <- as.data.frame(seg.electricity)
+
+seg.electricity <- seg.electricity %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.electricity$hh.electricity <- factor(seg.electricity$hh.electricity, levels = c("1","0"),labels = c( "Yes", "No"))
+
+ggplot(seg.electricity, aes(x = k3, y = perc, fill = hh.electricity)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Household Having Electricity", title = "Distribution of Women by HH Access to Electricity") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.electricity
+```
+
+##### 4.3.1.5. Asset: Radio (hh.radio)
+```{r}
+#table(dhs.seg.prov$hh.radio) #0,1
+dhs.seg.prov$hh.radio <- as.factor(dhs.seg.prov$hh.radio)
+
+seg.radio.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.radio <- svytable(~k3 + hh.radio, design = seg.radio.des)
+seg.radio <- as.data.frame(seg.radio)
+
+seg.radio <- seg.radio %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.radio$hh.radio <- factor(seg.radio$hh.radio, levels = c("1","0"),labels = c( "Yes", "No"))
+
+ggplot(seg.radio, aes(x = k3, y = perc, fill = hh.radio)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Household Having Radio", title = "Distribution of Women by Radio Ownership of the HH") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.radio
+```
+
+##### 4.3.1.6. Asset: TV (hh.tv)
+```{r}
+#table(dhs.seg.prov$hh.tv) #0,1
+dhs.seg.prov$hh.tv <- as.factor(dhs.seg.prov$hh.tv)
+
+seg.tv.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.tv <- svytable(~k3 + hh.tv, design = seg.tv.des)
+seg.tv <- as.data.frame(seg.tv)
+
+seg.tv <- seg.tv %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.tv$hh.tv <- factor(seg.tv$hh.tv, levels = c("1","0"),labels = c( "Yes", "No"))
+
+ggplot(seg.tv, aes(x = k3, y = perc, fill = hh.tv)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Household Having TV", title = "Distribution of Women by TV Ownership of the HH") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.tv
+```
+
+##### 4.3.1.7. Asset: Refirdgrator (hh.refrig)
+```{r}
+#table(dhs.seg.prov$hh.refrig) #0,1
+dhs.seg.prov$hh.refrig <- as.factor(dhs.seg.prov$hh.refrig)
+
+seg.refrig.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.refrig <- svytable(~k3 + hh.refrig, design = seg.refrig.des)
+seg.refrig <- as.data.frame(seg.refrig)
+
+seg.refrig <- seg.refrig %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.refrig$hh.refrig <- factor(seg.refrig$hh.refrig, levels = c("1","0"),labels = c( "Yes", "No"))
+
+ggplot(seg.refrig, aes(x = k3, y = perc, fill = hh.refrig)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Household Having Refrigerator", title = "Distribution of Women by Refrigerator Ownership of the HH") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.refrig
+```
+
+##### 4.3.1.8. Asset: Landline (hh.tele)
+```{r, echo=TRUE}
+#None of the rural population has landline
+```
+
+##### 4.3.1.9. Asset: Fan (hh.fan)
+```{r}
+#table(dhs.seg.prov$hh.fan) #0,1
+dhs.seg.prov$hh.fan <- as.factor(dhs.seg.prov$hh.fan)
+
+seg.fan.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.fan <- svytable(~k3 + hh.fan, design = seg.fan.des)
+seg.fan <- as.data.frame(seg.fan)
+
+seg.fan <- seg.fan %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.fan$hh.fan <- factor(seg.fan$hh.fan, levels = c("1","0"),labels = c( "Yes", "No"))
+
+ggplot(seg.fan, aes(x = k3, y = perc, fill = hh.fan)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Household Having Fan", title = "Distribution of Women by Fan Ownership of the HH") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.fan
+```
+
+##### 4.3.1.10. Asset: Washing machine (hh.wash)
+```{r}
+#table(dhs.seg.prov$hh.wash) #0,1
+dhs.seg.prov$hh.wash <- as.factor(dhs.seg.prov$hh.wash)
+
+seg.wash.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.wash <- svytable(~k3 + hh.wash, design = seg.wash.des)
+seg.wash <- as.data.frame(seg.wash)
+
+seg.wash <- seg.wash %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.wash$hh.wash <- factor(seg.wash$hh.wash, levels = c("1","0"),labels = c( "Yes", "No"))
+
+ggplot(seg.wash, aes(x = k3, y = perc, fill = hh.wash)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Household Having Washing Machine", title = "Distribution of Women by Washing Machine Ownership of the HH") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.wash
+```
+
+##### 4.3.1.11. Asset: Air conditionor (hh.air)
+```{r}
+#table(dhs.seg.prov$hh.air) #0,1
+dhs.seg.prov$hh.air <- as.factor(dhs.seg.prov$hh.air)
+
+seg.air.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.air <- svytable(~k3 + hh.air, design = seg.air.des)
+seg.air <- as.data.frame(seg.air)
+
+seg.air <- seg.air %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.air$hh.air <- factor(seg.air$hh.air, levels = c("1","0"),labels = c( "Yes", "No"))
+
+ggplot(seg.air, aes(x = k3, y = perc, fill = hh.air)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Household Having Air Conditioner", title = "Distribution of Women by Air Conditioner Ownership of the HH") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.air
+```
+
+##### 4.3.1.12. Asset: Household amenities (house.index)
+```{r, echo=TRUE}
+#for household amenities, it was coded as: 0 = having 0-2 types of the given HH amenity items, 1 = having 3-5 types, 2=having 6-8 types
+```
+
+```{r}
+#class(dhs.seg.prov$house.index) #0,1,2
+dhs.seg.prov$house.index <- as.factor(dhs.seg.prov$house.index)
+
+seg.house.index.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.house.index <- svytable(~k3 + house.index, design = seg.house.index.des)
+seg.house.index <- as.data.frame(seg.house.index)
+
+seg.house.index <- seg.house.index %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.house.index$house.index <- factor(seg.house.index$house.index, levels = c("2","1", "0"),labels = c( "Owning 6-8 types", "Owning 3-5 types", "Owning 0-2 types"))
+
+ggplot(seg.house.index, aes(x = k3, y = perc, fill = house.index)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Household Amenities", title = "Distribution of Women by Household Amenitity Ownership") +
+  scale_fill_manual(values = c("#03859b","#9cc2f4","#386CB0")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.house.index
+```
+
+##### 4.3.1.13. Asset: Bike (hh.bike)
+```{r}
+#table(dhs.seg.prov$hh.bike) #0,1
+dhs.seg.prov$hh.bike <- as.factor(dhs.seg.prov$hh.bike)
+
+seg.bike.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.bike <- svytable(~k3 + hh.bike, design = seg.bike.des)
+seg.bike <- as.data.frame(seg.bike)
+
+seg.bike <- seg.bike %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.bike$hh.bike <- factor(seg.bike$hh.bike, levels = c("1","0"),labels = c( "Yes", "No"))
+
+ggplot(seg.bike, aes(x = k3, y = perc, fill = hh.bike)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Household Having Bike", title = "Distribution of Women by Bike Ownership of the HH") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.bike
+```
+
+##### 4.3.1.14. Asset: Motorbike (hh.motor)
+```{r}
+#table(dhs.seg.prov$hh.motor) #0,1
+dhs.seg.prov$hh.motor <- as.factor(dhs.seg.prov$hh.motor)
+
+seg.motor.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.motor <- svytable(~k3 + hh.motor, design = seg.motor.des)
+seg.motor <- as.data.frame(seg.motor)
+
+seg.motor <- seg.motor %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.motor$hh.motor <- factor(seg.motor$hh.motor, levels = c("1","0"),labels = c( "Yes", "No"))
+
+ggplot(seg.motor, aes(x = k3, y = perc, fill = hh.motor)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Household Having Motorbike", title = "Distribution of Women by Motorbike Ownership of the HH") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.motor
+```
+
+##### 4.3.1.15. Asset: Car (hh.car)
+```{r}
+#table(dhs.seg.prov$hh.car) #0,1
+dhs.seg.prov$hh.car <- as.factor(dhs.seg.prov$hh.car)
+
+seg.car.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.car <- svytable(~k3 + hh.car, design = seg.car.des)
+seg.car <- as.data.frame(seg.car)
+
+seg.car <- seg.car %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.car$hh.car <- factor(seg.car$hh.car, levels = c("1","0"),labels = c( "Yes", "No"))
+
+ggplot(seg.car, aes(x = k3, y = perc, fill = hh.car)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Household Having Car", title = "Distribution of Women by Car Ownership of the HH") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.car
+```
+
+##### 4.3.1.16. Asset: Vehicles (vehic.index)
+```{r, echo=TRUE}
+#for the vehicle index: 0 = having 0 type, 1 = having 1 type, 2 = having 2+ types 
+```
+
+```{r}
+table(dhs.seg.prov$vehic.index) #0,1,2
+dhs.seg.prov$vehic.index <- as.factor(dhs.seg.prov$vehic.index)
+
+seg.vehic.index.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.vehic.index <- svytable(~k3 + vehic.index, design = seg.vehic.index.des)
+seg.vehic.index <- as.data.frame(seg.vehic.index)
+
+seg.vehic.index <- seg.vehic.index %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.vehic.index$vehic.index <- factor(seg.vehic.index$vehic.index, levels = c("3","2","1"),labels = c( "Owning 2+ types", "Owning 1 type", "Owning 0 type"))
+
+ggplot(seg.vehic.index, aes(x = k3, y = perc, fill = vehic.index)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = " Vehicle Ownership", title = "Distribution of Women by  Vehicle Ownership of the HH") +
+  scale_fill_manual(values = c("#03859b","#9cc2f4","#386CB0")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.vehic.index
+```
+
+##### 4.3.1.17. Asset: Mobile phone (hh.phone)
+```{r}
+#table(dhs.seg.prov$hh.car) #0,1
+dhs.seg.prov$hh.car <- as.factor(dhs.seg.prov$hh.car)
+
+seg.car.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.car <- svytable(~k3 + hh.car, design = seg.car.des)
+seg.car <- as.data.frame(seg.car)
+
+seg.car <- seg.car %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.car$hh.car <- factor(seg.car$hh.car, levels = c("1","0"),labels = c( "Yes", "No"))
+
+ggplot(seg.car, aes(x = k3, y = perc, fill = hh.car)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Household Having Car", title = "Distribution of Women by Car Ownership of the HH") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.car
+```
+
+##### 4.3.1.18. Asset: Watch (hh.watch)
+```{r}
+#table(dhs.seg.prov$hh.watch) #0,1
+dhs.seg.prov$hh.watch <- as.factor(dhs.seg.prov$hh.watch)
+
+seg.watch.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.watch <- svytable(~k3 + hh.watch, design = seg.watch.des)
+seg.watch <- as.data.frame(seg.watch)
+
+seg.watch <- seg.watch %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.watch$hh.watch <- factor(seg.watch$hh.watch, levels = c("1","0"),labels = c( "Yes", "No"))
+
+ggplot(seg.watch, aes(x = k3, y = perc, fill = hh.watch)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Household Having Watch", title = "Distribution of Women by Watch Ownership of the HH") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.watch
+```
+
+##### 4.3.1.19. Asset: Computer (hh.computer)
+```{r}
+#table(dhs.seg.prov$hh.computer) #0,1
+dhs.seg.prov$hh.computer <- as.factor(dhs.seg.prov$hh.computer)
+
+seg.computer.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.computer <- svytable(~k3 + hh.computer, design = seg.computer.des)
+seg.computer <- as.data.frame(seg.computer)
+
+seg.computer <- seg.computer %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.computer$hh.computer <- factor(seg.computer$hh.computer, levels = c("1","0"),labels = c( "Yes", "No"))
+
+ggplot(seg.computer, aes(x = k3, y = perc, fill = hh.computer)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Household Having Computer", title = "Distribution of Women by Computer Ownership of the HH") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.computer
+```
+
+##### 4.3.1.20. Asset: Personal amenities (person.index)
+```{r}
+#class(dhs.seg.prov$person.index) #0,1,2
+dhs.seg.prov$person.index <- as.factor(dhs.seg.prov$person.index)
+
+seg.person.index.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.person.index <- svytable(~k3 + person.index, design = seg.person.index.des)
+seg.person.index <- as.data.frame(seg.person.index)
+
+seg.person.index <- seg.person.index %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.person.index$person.index <- factor(seg.person.index$person.index, levels = c("2","1", "0"),labels = c( "Owning 2+ types", "Owning 1 type", "Owning 0 type"))
+
+ggplot(seg.person.index, aes(x = k3, y = perc, fill = person.index)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Personal Amenities", title = "Distribution of Women by  Personal Amenity Ownership of the HH") +
+  scale_fill_manual(values = c("#03859b","#9cc2f4","#386CB0")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.person.index
+```
+
+##### 4.3.1.21. Asset: Land for agriculture (hh.land)
+```{r, echo=TRUE}
+#see plot above for this in 2.1.13.
+```
+
+##### 4.3.1.22. Asset: Animal (hh.animal)
+```{r}
+#table(dhs.seg.prov$hh.animal)
+dhs.seg.prov$hh.animal <- as.factor(dhs.seg.prov$hh.animal)
+
+seg.animal.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.animal <- svytable(~k3 + hh.animal, design = seg.animal.des)
+seg.animal <- as.data.frame(seg.animal)
+
+seg.animal <- seg.animal %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.animal$hh.animal <- factor(seg.animal$hh.animal, levels = c("1","0"),labels = c( "Yes", "No"))
+
+ggplot(seg.animal, aes(x = k3, y = perc, fill = hh.animal)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Household Having Animals for Productivity Purpose", title = "Distribution of Women by HH Ownership of Productive Animals") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.animal
+```
+
+##### 4.3.1.23. Asset: Productive assets (product.index)
+```{r}
+#class(dhs.seg.prov$product.index) #0,1,2
+dhs.seg.prov$product.index <- as.factor(dhs.seg.prov$product.index)
+
+seg.product.index.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.product.index <- svytable(~k3 + product.index, design = seg.product.index.des)
+seg.product.index <- as.data.frame(seg.product.index)
+
+seg.product.index <- seg.product.index %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.product.index$product.index <- factor(seg.product.index$product.index, levels = c("2","1", "0"),labels = c( "Owning both land and animals", "Owning only land or only animals", "Owning neither land nor animal"))
+
+ggplot(seg.product.index, aes(x = k3, y = perc, fill = product.index)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Productive Assets", title = "Distribution of Women by  HH Ownership of Productive Assets") +
+  scale_fill_manual(values = c("#03859b","#9cc2f4","#386CB0")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.product.index
+```
+
+##### 4.3.1.24. Housing materials: Floor (hh.floor)
+```{r}
+#table(dhs.seg.prov$hh.floor) #finished, natural, rudimentary
+dhs.seg.prov$hh.floor <- as.factor(dhs.seg.prov$hh.floor)
+
+seg.hh.floor.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.hh.floor <- svytable(~k3 + hh.floor, design = seg.hh.floor.des)
+seg.hh.floor <- as.data.frame(seg.hh.floor)
+
+seg.hh.floor <- seg.hh.floor %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.hh.floor$hh.floor <- factor(seg.hh.floor$hh.floor, levels = c("finished", "rudimentary", "natural"),labels = c("Finished", "Rudimentary", "Natural"))
+
+ggplot(seg.hh.floor, aes(x = k3, y = perc, fill = hh.floor)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Floor Material", title = "Distribution of Women by Type of Floor Material") +
+  scale_fill_manual(values = c("#03859b","#9cc2f4","#386CB0")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.hh.floor
+```
+
+##### 4.3.1.25. Housing materials: Wall (hh.wall)
+```{r}
+#table(dhs.seg.prov$hh.wall) #finished, natural, rudimentary
+dhs.seg.prov$hh.wall <- as.factor(dhs.seg.prov$hh.wall)
+
+seg.hh.wall.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.hh.wall <- svytable(~k3 + hh.wall, design = seg.hh.wall.des)
+seg.hh.wall <- as.data.frame(seg.hh.wall)
+
+seg.hh.wall <- seg.hh.wall %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.hh.wall$hh.wall <- factor(seg.hh.wall$hh.wall, levels = c("finished", "rudimentary", "natural"),labels = c("Finished", "Rudimentary", "Natural"))
+
+ggplot(seg.hh.wall, aes(x = k3, y = perc, fill = hh.wall)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Wall Material", title = "Distribution of Women by Type of Wall Material") +
+  scale_fill_manual(values = c("#03859b","#9cc2f4","#386CB0")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.hh.wall
+```
+
+##### 4.3.1.26. Housing materials: Roof (hh.roof)
+```{r}
+#table(dhs.seg.prov$hh.roof) #finished, natural, rudimentary
+dhs.seg.prov$hh.roof <- as.factor(dhs.seg.prov$hh.roof)
+
+seg.hh.roof.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.hh.roof <- svytable(~k3 + hh.roof, design = seg.hh.roof.des)
+seg.hh.roof <- as.data.frame(seg.hh.roof)
+
+seg.hh.roof <- seg.hh.roof %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.hh.roof$hh.roof <- factor(seg.hh.roof$hh.roof, levels = c("finished", "rudimentary", "natural"),labels = c("Finished", "Rudimentary", "Natural"))
+
+ggplot(seg.hh.roof, aes(x = k3, y = perc, fill = hh.roof)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Roof Material", title = "Distribution of Women by Type of Roof Material") +
+  scale_fill_manual(values = c("#03859b","#9cc2f4","#386CB0")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.hh.roof
+```
+
+##### 4.3.1.26. Housing materials: Housing material index (material.index)
+```{r, echo=TRUE}
+#when constructing this variable: for fllor, wall, roof: "finished" ~ 2, "rudimentary" ~ 1,"natural" ~ 0; and add up to material.sum
+  ##table(HH$material.sum) #from 0 to 6. Consider index: [6] ~ 2: all 3 is finished; [3:5] ~ 1: at least 1 of the 3 is finished; [0:2]
+#class(dhs.seg.prov$material.index) # 0     1     2
+
+dhs.seg.prov$material.index <- as.factor(dhs.seg.prov$material.index)
+
+seg.material.index.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.material.index <- svytable(~k3 + material.index, design = seg.material.index.des)
+seg.material.index <- as.data.frame(seg.material.index)
+
+seg.material.index <- seg.material.index %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.material.index$material.index <- factor(seg.material.index$material.index, levels = c("2","1", "0"),labels = c( "All 3 Using Finished Materials", "At Least 1 Using Finished Materials", "None Using Finished Materials"))
+
+ggplot(seg.material.index, aes(x = k3, y = perc, fill = material.index)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Housing Materials (Floor, Wall, Roof)", title = "Distribution of Women by  Housing Materials") +
+  scale_fill_manual(values = c("#03859b","#9cc2f4","#386CB0")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.material.index
+```
+
+##### 4.3.1.27. Wealth index (wealth.index.poor)
+```{r}
+#table(dhs.seg.prov$wealth.index.poor) #0     1 (poorest)
+
+dhs.seg.prov$wealth.index.poor <- as.factor(dhs.seg.prov$wealth.index.poor)
+
+seg.poor.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.poor <- svytable(~k3 + wealth.index.poor, design = seg.poor.des)
+seg.poor <- as.data.frame(seg.poor)
+
+seg.poor <- seg.poor %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.poor$wealth.index.poor <- factor(seg.poor$wealth.index.poor, levels = c("1","0"),labels = c( "Yes", "No"))
+
+ggplot(seg.poor, aes(x = k3, y = perc, fill = wealth.index.poor)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Categoried As The Poorest", title = "Distribution of Women by Household Wealth Index") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.poor
+```
+
+##### 4.3.1.28. Wealth index (wealth.index.ur.ord)
+```{r, echo=TRUE}
+#see the plot above in 2.3
+```
+
+##### 4.3.1.29. Women's work (work.seasonal)
+```{r, echo=TRUE}
+#see the plot above in 2.2.4. for this)
+```
+
+#### 4.3.2. Homestead
+##### 4.3.2.1. Number of rooms used for sleeping (hh.rooms)
+```{r}
+#table(dhs.seg.prov$hh.rooms) #Four or more One or fewer Two to three 
+
+dhs.seg.prov$hh.rooms <- as.factor(dhs.seg.prov$hh.rooms)
+
+seg.hh.rooms.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.hh.rooms <- svytable(~k3 + hh.rooms, design = seg.hh.rooms.des)
+seg.hh.rooms <- as.data.frame(seg.hh.rooms)
+
+seg.hh.rooms <- seg.hh.rooms %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.hh.rooms$hh.rooms <- factor(seg.hh.rooms$hh.rooms, levels = c("Four or more", "Two to three", "One or fewer"),labels = c("4+ rooms", "2-3 rooms", "0-1 room"))
+
+ggplot(seg.hh.rooms, aes(x = k3, y = perc, fill = hh.rooms)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Numer of Rooms for Sleeping", title = "Distribution of Women by Numer of Rooms for Sleeping") +
+  scale_fill_manual(values = c("#03859b","#9cc2f4","#386CB0")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.hh.rooms
+```
+
+##### 4.3.2.2. Electricity (hh.electricity)
+```{r, echo=TRUE}
+#see plot in 4.3.1.4. for this
+```
+
+##### 4.3.2.3. Toliet (hh.toilet.flush)
+```{r, echo=TRUE}
+#see plot in 2.1.8. for this.
+```
+
+##### 4.3.2.4. Waiting time to get water (hh.wat.time.11plus)
+```{r}
+#see plot below in 4.3.3.1. for this.
+```
+
+#### 4.3.3. Water
+##### 4.3.3.1. Waiting time to get water (hh.wat.time.11plus)
+```{r, echo=TRUE}
+#Will explore the raw data from DHS to try different cut-offs. #hv204
+```
+
+```{r}
+#table(dhs.seg.prov$hh.wat.time.11plus)
+dhs.seg.prov$hh.wat.time.11plus <- as.factor(dhs.seg.prov$hh.wat.time.11plus)
+
+seg.wat.11plus.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.wat.11plus <- svytable(~k3 + hh.wat.time.11plus, design = seg.wat.11plus.des)
+seg.wat.11plus <- as.data.frame(seg.wat.11plus)
+
+seg.wat.11plus <- seg.wat.11plus %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.wat.11plus$hh.wat.time.11plus <- factor(seg.wat.11plus$hh.wat.time.11plus, levels = c("0","1"),labels = c("0-10 minutes", ">= 11 minutes"))
+
+ggplot(seg.wat.11plus, aes(x = k3, y = perc, fill = hh.wat.time.11plus)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Time Required to Get Drinking Water", title = "Distribution of Women by Time Required to Access Drinking Water") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.wat.11plus
+
+#Plot 2
+#hh.wat.time.yn
+dhs.seg.prov$hh.wat.time.yn <- as.factor(dhs.seg.prov$hh.wat.time.yn)
+
+seg.wat.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.wat <- svytable(~k3 + hh.wat.time.yn, design = seg.wat.des)
+seg.wat <- as.data.frame(seg.wat)
+
+seg.wat <- seg.wat %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.wat$hh.wat.time.yn <- factor(seg.wat$hh.wat.time.yn, levels = c("0","1"),labels = c("Yes","No, water on premises"))
+
+ggplot(seg.wat, aes(x = k3, y = perc, fill = hh.wat.time.yn)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Time Required to Get Drinking Water", title = "Distribution of Women by Time Required to Access Drinking Water") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.wat
+```
+
+##### 4.3.3.2. Interuption of water supply (hh.wat.interrupt)
+```{r}
+#table(dhs.seg.prov$hh.wat.interrupt) #No / don't know, Water from a source other than piped,Yes
+dhs.seg.prov$hh.wat.interrupt <- as.factor(dhs.seg.prov$hh.wat.interrupt)
+
+seg.wat.interrupt.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.wat.interrupt <- svytable(~k3 + hh.wat.interrupt, design = seg.wat.interrupt.des)
+seg.wat.interrupt <- as.data.frame(seg.wat.interrupt)
+
+seg.wat.interrupt <- seg.wat.interrupt %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.wat.interrupt$hh.wat.interrupt <- factor(seg.wat.interrupt$hh.wat.interrupt, levels = c("No / don't know","Yes", "Water from a source other than piped"),labels = c("No","Yes", "Water from a source other than piped"))
+
+ggplot(seg.wat.interrupt, aes(x = k3, y = perc, fill = hh.wat.interrupt)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Interruption of Water Supply", title = "Distribution of Women by Interruption of Water Supply") +
+  scale_fill_manual(values = c("#03859b","#b4adaa","#9cc2f4")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.wat.interrupt
+```
+
+#### 4.3.4. Economic instability
+##### 4.3.4.1. Bank account ownership for women (women.bank.acct)
+```{r, echo=TRUE}
+#see the plot above in 4.3.1.
+```
+
+##### 4.3.4.2. Bank account ownership for HH (hh.bank.acct)
+```{r}
+#table(dhs.seg.prov$hh.bank.acct)
+dhs.seg.prov$hh.bank.acct <- as.factor(dhs.seg.prov$hh.bank.acct)
+
+seg.hhbank.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.hhbank <- svytable(~k3 + hh.bank.acct, design = seg.hhbank.des)
+seg.hhbank <- as.data.frame(seg.hhbank)
+
+seg.hhbank <- seg.hhbank %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.hhbank$hh.bank.acct <- factor(seg.hhbank$hh.bank.acct, levels = c("1","0"),labels = c( "Yes", "No"))
+
+ggplot(seg.hhbank, aes(x = k3, y = perc, fill = hh.bank.acct)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Household Owning Bank Account", title = "Distribution of Women by Household Ownership of Bank Account") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.hhbank
+```
+
+##### 4.3.4.3. Cost for Healthcare being a perceived barrier (med.cost)
+```{r}
+#table(dhs.seg.prov$med.cost)
+dhs.seg.prov$med.cost <- as.factor(dhs.seg.prov$med.cost)
+
+seg.cost.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.cost <- svytable(~k3 + med.cost, design = seg.cost.des)
+seg.cost <- as.data.frame(seg.cost)
+
+seg.cost <- seg.cost %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.cost$med.cost <- factor(seg.cost$med.cost, levels = c("0", "1"),labels = c("No", "Yes"))
+
+ggplot(seg.cost, aes(x = k3, y = perc, fill = med.cost)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Cost to Get Healthcare Is\nPerceived As A Barrier", title = "Distribution of Women by Perceived Barrier") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.cost
+```
+
+#### 4.3.5. Migration
+##### 4.3.5.1. HH migration (migrant)
+```{r}
+#table(dhs.seg.prov$migrant) #Always live here, Less than 1 year, Less than 5 years, More than 5 years
+dhs.seg.prov$migrant <- as.factor(dhs.seg.prov$migrant)
+
+seg.migrant.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.migrant <- svytable(~k3 + migrant, design = seg.migrant.des)
+seg.migrant <- as.data.frame(seg.migrant)
+
+seg.migrant <- seg.migrant %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+ggplot(seg.migrant, aes(x = k3, y = perc, fill = migrant)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Household Migration Record", title = "Distribution of Women by Household Migration Record") +
+  scale_fill_manual(values = c("#03859b","#9cc2f4","#b590bf","#386CB0")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.migrant
+```
+
+### 4.4. Health mental models
+#### 4.4.1. Perceived barriers to healthcare
+```{r, echo=TRUE}
+# see plots above for going alone, distance, cost, and getting permission being perceived barriers
+```
+
+#### 4.4.2. Informational barriers
+##### 4.4.2.1. Informed about FP (fp.info.yn)
+```{r, echo=TRUE}
+#this comes from a question that asked women in the past 6 months if they had learned about FP from sources a, b, c, ... etc.. This is different from another variale disc.fp.yn (having someone to discuss FP with)
+```
+
+```{r}
+#table(dhs.seg.prov$fp.info.yn) #0, 1
+dhs.seg.prov$med.cost <- as.factor(dhs.seg.prov$med.cost)
+
+seg.fp.info.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.fp.info <- svytable(~k3 + fp.info.yn, design = seg.fp.info.des)
+seg.fp.info <- as.data.frame(seg.fp.info)
+
+seg.fp.info <- seg.fp.info %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+seg.fp.info$fp.info.yn <- factor(seg.fp.info$fp.info.yn, levels = c("1","0"),labels = c("Yes","No"))
+
+ggplot(seg.fp.info, aes(x = k3, y = perc, fill = fp.info.yn)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Informational Barrier", title = "Distribution of Women by Informational Barrier (FP)") +
+  scale_fill_manual(values = c("#03859b","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.fp.info
+```
+
+#### 4.4.3. Phycological barriers to health choices
+##### 4.4.3.1. Having autonomy on contraceptives (auto.contra)
+```{r}
+#table(dhs.seg.prov$auto.contra) #Full or partial autonomy,No control over,Not partnered
+dhs.seg.prov$auto.contra <- as.factor(dhs.seg.prov$auto.contra)
+
+seg.auto.contra.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data= dhs.seg.prov)
+seg.auto.contra <- svytable(~k3 + auto.contra, design = seg.auto.contra.des)
+seg.auto.contra <- as.data.frame(seg.auto.contra)
+
+seg.auto.contra <- seg.auto.contra %>% 
+  group_by(k3) %>%
+  mutate(perc = round((Freq/sum(Freq))*100, digits = 0)) %>%
+  ungroup()
+
+##recorder
+#seg.auto.contra$auto.contra <- factor(seg.auto.contra$auto.contra, levels = c("No / don't know","Yes", "Water from a source other than piped"),labels = c("No","Yes", "Water from a source other than piped"))
+
+ggplot(seg.auto.contra, aes(x = k3, y = perc, fill = auto.contra)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = paste0(perc, "%")), position = position_stack(vjust = 0.5), size = 2.5) +
+  labs(x = "Segment", y = "Percentage", fill = "Autonomy Over Contraceotive Choice", title = "Distribution of Women by Their Autonomy Over Contraceotive Choice") +
+  scale_fill_manual(values = c("#03859b","#386CB0","#b4adaa")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_text(size = 9))
+
+seg.auto.contra
+```
+
+### 4.5. Social support
+#### 4.5.1. Health support
+##### 4.5.1.1. Having someone to discuss FP with (disc.fp.yn)
+```{r, echo=TRUE}
+# see plot above for Having someone to discuss FP with (disc.fp.yn)
+```
+
+##### 4.5.1.2. Insurance coverage (insurance.cov.cat1)
+```{r, echo=TRUE}
+#see plot above for Insurance coverage (insurance.cov.cat1)
+```
+
+### 4.6. Human and natural systems
+#### 4.6.1. Connectivity & Access to infrastructure
+##### 4.6.1.1. bike (hh.bike)
+##### 4.6.1.2. Motorbike (hh.motor)
+##### 4.6.1.3. Car (hh.car)
+##### 4.6.1.4. Vehicle index (hh.vehic.index)
+##### 4.6.1.5. Whether living in urban slum (slum1)
+```{r, echo=TRUE}
+# see the plots above for bike, motorbike, car, vehicle index, and whether living in urban slum
+```
+
+#### 4.6.2. Land usage
+##### 4.6.2.1. Agricultural land ownership (hh.land)
+```{r, echo=TRUE}
+# see the plots above for land for agriculture
+```
+

@@ -1,0 +1,29 @@
+
+
+########################
+default:
+  project_name: "North Nigeria Pathways 1.0"
+  root_path: "/Users/michaelkalnoky/Documents/consulting/clients/Sonder/analysis/pathways-segmentation/analyses/nga-pathways-1.0/workflow_v2/"
+  user_path: "outputs/"
+
+  create_new_pathways_workbook: FALSE
+  pathways_workbook_path: "pathways workbook - Pathways template.xlsx"
+  new_pathways_workbook_path: "pathways workbook - test.xlsx"
+
+
+  shp_file: "gadm41_NGA_shp/gadm41_NGA_1.shp"
+  data_id_var: "PSUIDfull"
+  data_strata_var: "STATE"
+  data_state_var: "STATE"
+
+
+########################
+docker:
+  root_path: "/home/rstudio/OneDrive - Bill & Melinda Gates Foundation/scenario_dhs_senegal_2019/"
+  user_path: "docker/"
+
+  pathways_workbook_path: "pathways workbook - Pathways template.xlsx"
+
+
+
+

@@ -1,0 +1,260 @@
+---
+title: "9_NN_typing tool (DHS2024)"
+author: "Lang Gao"
+date: "2026-01-14"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '6'
+  word_document:
+    toc: yes
+    toc_depth: '6'
+  pdf_document:
+    toc: yes
+    toc_depth: '6'
+---
+
+<style type="text/css">
+
+h1.title {
+  font-size: 21px;
+  color: Blue;
+  text-align: center;
+}
+h4.author { /* Header 4 - and the author and data headers use this too  */
+    font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+h4.date { /* Header 4 - and the author and data headers use this too  */
+  font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+</style>
+
+</br>
+
+
+***
+---
+
+#######################################
+0. Setting up the script
+#######################################
+Set up filepath, notation and packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(scipen = 100, digits = 4)
+
+#Set filepath
+setwd("/Users/langgao/Downloads/Freelancer projects/Sonder/North_Nigeria_2024DHS8_1.0")
+```
+
+Load packages
+```{r,echo=FALSE}
+rm(list=ls())
+pacman::p_load("dplyr","rpart", "rpart.plot", "caret", "randomForest", "data.table", "ggplot2", "gplots", "tidyverse", "readxl","corrplot", "ggplot2", "ranger", "haven")
+```
+
+Read in data
+```{r}
+rural <- readRDS("output/lca/nreps14/rural_outcomes_vulnerability_class_ranked.rds")
+# dim(rural) #10609   479
+# names(rural)
+# table(rural$segment_rank, rural$polygamy)
+
+urban <- readRDS("output/lca/nreps14/urban_outcomes_vulnerability_class_ranked.rds")
+# dim(urban)
+table(urban$segment_rank)
+# 4370+10609
+```
+
+
+## 0. Data prep
+```{r}
+tt_var <- read_xlsx("/Users/langgao/Downloads/Freelancer projects/Sonder/North_Nigeria_2024DHS8_1.0/output/pathways workbook - North_Nigeria_2024DHS8_1.0.xlsx",sheet = 'vulnerabilities')
+tt.var.rural <- tt_var$vulnerability_variable[tt_var$typing_tool_include ==1 & tt_var$typing_tool_strata%in%c("both", "rural")]
+tt.var.urban <- tt_var$vulnerability_variable[tt_var$typing_tool_include ==1 & tt_var$typing_tool_strata%in%c("both", "urban")]
+
+tt.var.rural
+tt.var.urban
+```
+
+### 0.1. Rural subset (5-class)
+```{r}
+tt_input_names.r <- names(rural)[(names(rural) %in% c("segment_rank", tt.var.rural))]
+rural_seg <- subset(rural, select=c(tt_input_names.r))
+# tt_input_names.r
+rural_seg <- rural_seg %>% 
+  dplyr::select(-"polygamy")
+```
+
+### 0.2. Urban sebset (4-class)
+```{r}
+tt_input_names.u <- names(urban)[(names(urban) %in% c("segment_rank", tt.var.urban))]
+urban_seg <- subset(urban, select=c(tt_input_names.u))
+dim(urban_seg)
+```
+
+set as factor
+```{r}
+rural_seg$segment_rank <- as.factor(rural_seg$segment_rank)
+urban_seg$segment_rank <- as.factor(urban_seg$segment_rank)
+```
+
+```{r}
+set.seed(12345)
+```
+
+## 1. Rural tree
+```{r}
+# table(rural_seg$segment_rank, rural_seg$polygamy)
+```
+
+### 1.1. Grow tree with penalty
+
+```{r}
+#  Grow a tree with loss penalty for R4.1 and R2 
+cls <- levels(rural_seg$segment_rank)
+K   <- length(cls)
+
+loss <- matrix(1, nrow = K, ncol = K, dimnames = list(cls, cls))
+diag(loss) <- 0
+loss["R4.1-NN", ] <- 1   # stronger penalty for harder segment
+loss["R4.1-NN", "R4.1-NN"] <- 0
+loss["R2-NN",   ] <- 0.8
+loss["R2-NN",   "R2-NN"]   <- 0
+
+tree_rural <- rpart(segment_rank ~ .,  data=rural_seg, parms = list(loss = loss), control=rpart.control(cp=0.001, xval=5), method="class")
+
+
+# See what is the cp value if following 1-SE rule 
+cp_table <- as.data.frame(tree_rural$cptable)
+# minimum xerror row
+min_row <- which.min(cp_table$xerror)
+# threshold = min xerror + its standard error
+threshold <- cp_table$xerror[min_row] + cp_table$xstd[min_row]
+
+# pick the LARGEST cp (= simplest tree) whose xerror is still within threshold
+cp_1se <- cp_table$CP[max(which(cp_table$xerror <= threshold))]
+
+cat("cp chosen by 1-SE rule:", cp_1se, "\n")
+cat("cp chosen by min-xerror:", cp_table$CP[min_row], "\n")
+#both suggesting 0.001 (earlier when penalizing, we use the xerror: tree_loss$cptable[which.min(tree_loss$cptable[, "xerror"]), "CP"], it also indicates 0.001; but then the tree is still big, so adjust it to 0.0015)
+tree_rural_prune <- prune(tree_rural, cp = 0.0018)
+```
+
+### 1.2. Finan rural tree and performance
+```{r, fig.height=12, fig.width=20}
+prp(tree_rural_prune, type=5, varlen=0, cex=0.9, extra = 2)
+
+pred <- predict(tree_rural_prune, rural_seg, type = "class")
+confusionMatrix(pred, rural_seg$segment_rank)
+```
+
+### 1.2.3. Save
+```{r}
+saveRDS(tree_rural_prune, "CART/tree_rural_pruned.rds")
+```
+
+
+Previous model for reference/compare [not to use]
+```{r,eval=FALSE}
+tree_rural <- rpart(segment_rank ~ .,  data=rural_seg, control=rpart.control(cp=0.001, xval=5), method="class")
+
+plotcp(tree_rural)
+printcp(tree_rural)
+#Variables actually used in tree construction (19)      
+```
+
+```{r, fig.height=15, fig.width=12, eval=FALSE}
+tree_rural_prune<-prune(tree_rural, cp=tree_rural$cptable[which.min(tree_rural$cptable[,"xerror"]),"CP"])
+tree_rural_prune<-prune(tree_rural, cp=0.0039)
+```
+
+```{r, fig.height=12, fig.width=18, eval=FALSE}
+prp(tree_rural_prune, type=5, varlen=0, cex=1)
+
+PredictCART_train_rural <- predict(tree_rural_prune, data=rural_seg, type="class")
+PredictCART_train_rural <- as.factor(PredictCART_train_rural)
+confusionMatrix(data=PredictCART_train_rural, rural_seg$segment_rank)
+```
+
+
+Previous CART with loss matrix penalizing only R4.1
+```{r}
+#penalize is takes involving R4.1-NN
+  ##increase sensitivity of R4.1-NN (to reduce false negative)
+```
+
+```{r, eval=FALSE}
+cls <- levels(rural_seg$segment_rank)
+K <- length(cls)
+
+loss <- matrix(1, nrow = K, ncol = K, dimnames = list(cls, cls))
+diag(loss) <- 0
+
+target <- "R4.1-NN"
+# Penalize false negatives for R4.1-NN
+loss[target, ] <- 1.2
+loss[target, target] <- 0
+
+tree_loss <- rpart(
+  segment_rank ~ .,
+  data = rural_seg,
+  method = "class",
+  parms = list(loss = loss),
+  control = rpart.control(cp = 0.001, xval = 5))
+
+# Prune by xerror (or try 1-SE rule later)
+cp_best <- tree_loss$cptable[which.min(tree_loss$cptable[, "xerror"]), "CP"]
+# cp_best
+tree_loss_pruned <- prune(tree_loss, cp = cp_best)
+
+pred <- predict(tree_loss_pruned, rural_seg, type = "class")
+confusionMatrix(pred, rural_seg$segment_rank)
+```
+
+```{r, fig.height=10, fig.width=22, eval=FALSE}
+prp(tree_loss_pruned, type = 5, varlen = 0, cex = 0.8, extra = 2)
+
+```
+
+
+## 2. Urban tree
+### 2.1. Grow tree
+```{r, echo=TRUE}
+tree_urban <- rpart(segment_rank ~ .,  data=urban_seg, control=rpart.control(cp=0.001, xval=5), method="class")
+
+plotcp(tree_urban)
+#Use cp = 0.0081 (using 0.0053 does not necessarily improve the matrix sign., in additional, 0.0081 provides the matrix that meet the thresthold)
+
+printcp(tree_urban)
+#Variables actually used in tree construction (13)        
+```
+
+### 2.2. Prune tree [FINAL urban tree]
+```{r, fig.height=15, fig.width=12}
+tree_urban_prune<-prune(tree_urban, cp=tree_urban$cptable[which.min(tree_urban$cptable[,"xerror"]),"CP"])
+tree_urban_prune<-prune(tree_urban, cp=.0081)
+#plot(tree_urban_prune, uniform=TRUE, main="Classification Tree for Urban LCA")
+#text(tree_urban_prune, use.n=TRUE, all=TRUE, cex=.7)
+```
+
+```{r, fig.height=8, fig.width= 12}
+prp(tree_urban_prune, type = 5, varlen = 0, cex = 0.8, extra = 2)
+
+PredictCART_train_urban <- predict(tree_urban_prune, data=urban_seg, type="class")
+PredictCART_train_urban <- as.factor(PredictCART_train_urban)
+confusionMatrix(data=PredictCART_train_urban, urban_seg$segment_rank)
+```
+
+### 2.3. Save pruned tree
+```{r}
+saveRDS(tree_urban_prune, "CART/tree_urban_pruned.rds")
+```
+

@@ -1,0 +1,590 @@
+---
+#title: "8_Ethiopia_DHS_PCA_Rmarkdown"
+#date: "Last compiled on `r format(Sys.time(), '%c')`"
+#output: html_document
+#purpose: conduct pca analysis
+#input files: " 4_Ethiopia_DHS_vulnerability.rds, 5_Ethiopia_DHS_exploratory.des.rds,  7_Construct_mapping_external.xlsx"
+#output files: "none, see plots in this script"
+#ancestor scripts: "7_Ethiopia_DHS_construct_mapping"
+#descendent scripts: "none yet"
+#note: need to change working directory for each user
+#note: this uses the final version of the excel that was changed by hand, it does not use the constructed excel in script 7
+---
+
+
+
+```{r knit, eval=FALSE}
+rmarkdown::render("Code/8_Ethiopia_DHS_PCA_Rmd.Rmd", output_file = paste0('knits/8_Ethiopia_DHS_PCA_Rmd',format(Sys.time(), ' %m-%d-%y %H.%M.%S'), '.html'))
+```
+
+```{r, setup, include=FALSE}
+knitr::opts_knit$set(root.dir = '/Users/msb/Downloads/Modeling/') # need to change for each user
+## Set the working directory - need to change for each user
+```
+
+```{r readindata}
+###################################################################
+######## 8_Ethiopia_DHS_PCA_Rmd ##############
+########              Ethiopia DHS 2016              ##############
+###
+### Input: 4_Ethiopia_DHS_vulnerability.rds, 5_Ethiopia_DHS_exploratory.des.rds,  7_Construct_mapping_external.xlsx
+### ancestor scripts: 7_Ethiopia_DHS_construct_mapping
+### output: see plots in the html resulting from this file
+###################################################################
+
+#### Setup ####
+
+
+## Load packages
+rm(list=ls())
+pacman::p_load(readxl, tidyverse, survey, ggrepel)
+
+#library(readxl)
+#library(tidyverse)
+#library(survey)
+#library(ggrepel)
+
+#### Input data ##
+## Read in construct mapping
+const <- as.data.frame(read_xlsx("Data/Ethiopia_constructed_data/7_Construct_mapping_external_final.xlsx", sheet="Sheet1"))
+const <- const[order(const$category),]
+dhs.seg <- readRDS("Data/Ethiopia_constructed_data/5_Ethiopia_DHS_exploratory.rds")
+dhs.seg.des <- readRDS("Data/Ethiopia_constructed_data/5_Ethiopia_DHS_exploratory.des.rds")
+
+```
+
+```{r functions1}
+#### Define functions ##
+
+f_biplot <- function(load,pc){
+  plot_dat <- as.data.frame(load[,pc])
+  plot_dat$labels <- row.names(plot_dat)
+  plot_dat$start_x <- 0
+  plot_dat$stary_y <- 0
+  max_lim <- ceiling(max(abs(plot_dat[,1:2])))
+  
+  p <- ggplot(plot_dat) + 
+    geom_segment(aes(x=plot_dat$start_x,y=plot_dat$stary_y,xend=plot_dat[,1],yend=plot_dat[,2]),arrow = arrow(length=unit(0.2,'cm'))) +
+    coord_cartesian(xlim = c(-max_lim,max_lim),ylim=c(-max_lim,max_lim)) + xlab(names(plot_dat)[1]) + ylab(names(plot_dat)[2]) +
+    theme_bw() +
+    geom_text_repel(mapping = aes(label=plot_dat$labels,x=plot_dat[,1],y=plot_dat[,2]))
+  plot(p)
+}
+
+f_screeplot <- function(pca_res){
+  prop <- (pca_res$sdev)^2/sum((pca_res$sdev)^2)
+  cum_prop <- cumsum(prop)
+  cum_prop_label <- paste0(round(100*cum_prop,2),'%')
+  plot_dat <- data.frame(PC=paste0('PC',1:length(cum_prop)), sd=pca_res$sdev,prop=prop,cum_prop=cum_prop,label=cum_prop_label)
+
+  p <- ggplot(plot_dat,aes(x=reorder(PC,cum_prop),y=sd)) + geom_bar(stat="identity") + theme_bw() +
+       xlab('PC') + geom_text(aes(label = label),vjust=-1)
+  plot(p)
+}
+
+f_loadings <- function(pca_res){
+  plot_dat <- as.data.frame(pca_res$rotation^2)
+  plot_dat$vul <- row.names(plot_dat)
+  plot_dat <- plot_dat %>% gather(PC, wt, -vul)
+  plot_dat$wt <- round(100*plot_dat$wt,2)
+  plot_dat$order <- as.numeric(sub('.*PC', '', plot_dat$PC))
+
+  
+  p <- ggplot(data=plot_dat,aes(fill=vul, y=wt, x=reorder(PC,order))) + geom_bar(position="stack", stat="identity") +
+       ylab('Contribution Wt') + xlab('PC')
+
+  plot(p)
+}
+```
+
+
+```{r explain}
+###### Notes: PCA analysis starts here  ####
+#### For each domain change the 'sub.category' argument below, which will perform the PCA within each of the domains
+#### Step 1: Check that all continuous/interval variables are coded as 'integer' or 'numeric' in R
+#### Step 2: Fit the PCA and look at the screeplot to tell us how many PCs capture a good amount of variable 
+#### Step 3: Using the information from Step 2 look at the the PC loadings. Variables that 'hang together' where we might be
+####         able to drop, are those vectors that are pretty much on-top of each other (i.e., like having perfect positive correlation)
+###          or those vectors that are pointing in opposite directions (i.e., like having perfect negative correlations)
+###          Variables that form right angles are pretty much uncorrelated, definitely worth keeping both
+###          NOTE!! Because we are treating categorical variables as a series of dummy variables, we should look to see
+###           if any one of the three categories provides some information beyond they other variables (and not look at how the
+###            those categories relate to each other). If one 'level' of the cateogry explains something the others don't in at
+###            least on PC dimension then I think that's evidence to include it 
+
+```
+
+```{r domain1}
+domain.var <- const[const$pca=='pca1' & !is.na(const$pca),'f.var.name']
+
+## USER CHECK: check coding of all variables 'character' ok for binary/categorical but for numeric/continuous/ordinal should change to numeric/integer
+lapply(dhs.seg[,domain.var],class)  
+# if you need to change to numeric copy code below with desirable name
+# dhs.seg.des$variables$num.children <- as.numeric(dhs.seg.des$variables$num.children)
+
+#perform weighted PCA where categorical variable is treated as series of dummies
+d1 <- svyprcomp(as.formula(paste0('~',paste(domain.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+summary(d1)   #proportion of total variable explained by each component 
+
+### Look at screeplot to determine how many PC's capture the variation in the data (rule of thumb around 60%)
+f_screeplot(d1)
+
+### Look at PC factor loadings (can look at any two PC combinations)
+d1$rotation
+f_loadings(pca_res = d1)
+
+#biplots
+f_biplot(d1$rotation,pc=c(1,2))   #PCA 1/2
+#f_biplot(d1$rotation,pc=c(2,3))   #PCA 2/3
+#f_biplot(d1$rotation,pc=c(1,3))   #PCA 1/3
+
+rm(domain.var,d1)
+```
+
+
+```{r functionsrepeat2}
+#### Define functions ##
+
+f_biplot <- function(load,pc){
+  plot_dat <- as.data.frame(load[,pc])
+  plot_dat$labels <- row.names(plot_dat)
+  plot_dat$start_x <- 0
+  plot_dat$stary_y <- 0
+  max_lim <- ceiling(max(abs(plot_dat[,1:2])))
+  
+  p <- ggplot(plot_dat) + 
+    geom_segment(aes(x=plot_dat$start_x,y=plot_dat$stary_y,xend=plot_dat[,1],yend=plot_dat[,2]),arrow = arrow(length=unit(0.2,'cm'))) +
+    coord_cartesian(xlim = c(-max_lim,max_lim),ylim=c(-max_lim,max_lim)) + xlab(names(plot_dat)[1]) + ylab(names(plot_dat)[2]) +
+    theme_bw() +
+    geom_text_repel(mapping = aes(label=plot_dat$labels,x=plot_dat[,1],y=plot_dat[,2]))
+  plot(p)
+}
+
+f_screeplot <- function(pca_res){
+  prop <- (pca_res$sdev)^2/sum((pca_res$sdev)^2)
+  cum_prop <- cumsum(prop)
+  cum_prop_label <- paste0(round(100*cum_prop,2),'%')
+  plot_dat <- data.frame(PC=paste0('PC',1:length(cum_prop)), sd=pca_res$sdev,prop=prop,cum_prop=cum_prop,label=cum_prop_label)
+
+  p <- ggplot(plot_dat,aes(x=reorder(PC,cum_prop),y=sd)) + geom_bar(stat="identity") + theme_bw() +
+       xlab('PC') + geom_text(aes(label = label),vjust=-1)
+  plot(p)
+}
+
+f_loadings <- function(pca_res){
+  plot_dat <- as.data.frame(pca_res$rotation^2)
+  plot_dat$vul <- row.names(plot_dat)
+  plot_dat <- plot_dat %>% gather(PC, wt, -vul)
+  plot_dat$wt <- round(100*plot_dat$wt,2)
+  plot_dat$order <- as.numeric(sub('.*PC', '', plot_dat$PC))
+
+  
+  p <- ggplot(data=plot_dat,aes(fill=vul, y=wt, x=reorder(PC,order))) + geom_bar(position="stack", stat="identity") +
+       ylab('Contribution Wt') + xlab('PC')
+
+  plot(p)
+}
+```
+
+```{r domain2}
+domain.var <- const[const$pca=='pca2' & !is.na(const$pca),'f.var.name']
+
+## USER CHECK: check coding of all variables 'character' ok for binary/categorical but for numeric/continuous/ordinal should change to numeric/integer
+lapply(dhs.seg[,domain.var],class)  
+# if you need to change to numeric copy code below with desirable name
+# dhs.seg.des$variables$num.children <- as.numeric(dhs.seg.des$variables$num.children)
+
+#perform weighted PCA where categorical variable is treated as series of dummies
+d2 <- svyprcomp(as.formula(paste0('~',paste(domain.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+summary(d2)   #proportion of total variable explained by each component 
+
+### Look at screeplot to determine how many PC's capture the variation in the data (rule of thumb around 60%)
+f_screeplot(d2)
+
+
+### Look at PC factor loadings (can look at any two PC combinations)
+d2$rotation
+f_loadings(pca_res = d2)
+
+
+#biplots
+f_biplot(d2$rotation,pc=c(1,2))   #PCA 1/2
+f_biplot(d2$rotation,pc=c(2,3))   #PCA 2/3
+f_biplot(d2$rotation,pc=c(1,3))   #PCA 1/3
+
+rm(domain.var,d2)
+
+```
+
+```{r functionsrepeat3}
+#### Define functions ##
+
+f_biplot <- function(load,pc){
+  plot_dat <- as.data.frame(load[,pc])
+  plot_dat$labels <- row.names(plot_dat)
+  plot_dat$start_x <- 0
+  plot_dat$stary_y <- 0
+  max_lim <- ceiling(max(abs(plot_dat[,1:2])))
+  
+  p <- ggplot(plot_dat) + 
+    geom_segment(aes(x=plot_dat$start_x,y=plot_dat$stary_y,xend=plot_dat[,1],yend=plot_dat[,2]),arrow = arrow(length=unit(0.2,'cm'))) +
+    coord_cartesian(xlim = c(-max_lim,max_lim),ylim=c(-max_lim,max_lim)) + xlab(names(plot_dat)[1]) + ylab(names(plot_dat)[2]) +
+    theme_bw() +
+    geom_text_repel(mapping = aes(label=plot_dat$labels,x=plot_dat[,1],y=plot_dat[,2]))
+  plot(p)
+}
+
+f_screeplot <- function(pca_res){
+  prop <- (pca_res$sdev)^2/sum((pca_res$sdev)^2)
+  cum_prop <- cumsum(prop)
+  cum_prop_label <- paste0(round(100*cum_prop,2),'%')
+  plot_dat <- data.frame(PC=paste0('PC',1:length(cum_prop)), sd=pca_res$sdev,prop=prop,cum_prop=cum_prop,label=cum_prop_label)
+
+  p <- ggplot(plot_dat,aes(x=reorder(PC,cum_prop),y=sd)) + geom_bar(stat="identity") + theme_bw() +
+       xlab('PC') + geom_text(aes(label = label),vjust=-1)
+  plot(p)
+}
+
+f_loadings <- function(pca_res){
+  plot_dat <- as.data.frame(pca_res$rotation^2)
+  plot_dat$vul <- row.names(plot_dat)
+  plot_dat <- plot_dat %>% gather(PC, wt, -vul)
+  plot_dat$wt <- round(100*plot_dat$wt,2)
+  plot_dat$order <- as.numeric(sub('.*PC', '', plot_dat$PC))
+
+  
+  p <- ggplot(data=plot_dat,aes(fill=vul, y=wt, x=reorder(PC,order))) + geom_bar(position="stack", stat="identity") +
+       ylab('Contribution Wt') + xlab('PC')
+
+  plot(p)
+}
+```
+
+```{r domain3}
+domain.var <- const[const$pca=='pca3' & !is.na(const$pca),'f.var.name']
+
+## USER CHECK: check coding of all variables 'character' ok for binary/categorical but for numeric/continuous/ordinal should change to numeric/integer
+lapply(dhs.seg[,domain.var],class)  
+# if you need to change to numeric copy code below with desirable name
+# dhs.seg.des$variables$num.children <- as.numeric(dhs.seg.des$variables$num.children)
+
+#perform weighted PCA where categorical variable is treated as series of dummies
+d3 <- svyprcomp(as.formula(paste0('~',paste(domain.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+summary(d3)   #proportion of total variable explained by each component 
+
+### Look at screeplot to determine how many PC's capture the variation in the data (rule of thumb around 60%)
+f_screeplot(d3)
+
+
+### Look at PC factor loadings (can look at any two PC combinations)
+d3$rotation
+f_loadings(pca_res = d3)
+
+
+#biplots
+f_biplot(d3$rotation,pc=c(1,2))   #PCA 1/2
+f_biplot(d3$rotation,pc=c(2,3))   #PCA 2/3
+f_biplot(d3$rotation,pc=c(1,3))   #PCA 1/3
+
+rm(domain.var,d3)
+
+```
+
+```{r functionsrepeat4}
+#### Define functions ##
+
+f_biplot <- function(load,pc){
+  plot_dat <- as.data.frame(load[,pc])
+  plot_dat$labels <- row.names(plot_dat)
+  plot_dat$start_x <- 0
+  plot_dat$stary_y <- 0
+  max_lim <- ceiling(max(abs(plot_dat[,1:2])))
+  
+  p <- ggplot(plot_dat) + 
+    geom_segment(aes(x=plot_dat$start_x,y=plot_dat$stary_y,xend=plot_dat[,1],yend=plot_dat[,2]),arrow = arrow(length=unit(0.2,'cm'))) +
+    coord_cartesian(xlim = c(-max_lim,max_lim),ylim=c(-max_lim,max_lim)) + xlab(names(plot_dat)[1]) + ylab(names(plot_dat)[2]) +
+    theme_bw() +
+    geom_text_repel(mapping = aes(label=plot_dat$labels,x=plot_dat[,1],y=plot_dat[,2]))
+  plot(p)
+}
+
+f_screeplot <- function(pca_res){
+  prop <- (pca_res$sdev)^2/sum((pca_res$sdev)^2)
+  cum_prop <- cumsum(prop)
+  cum_prop_label <- paste0(round(100*cum_prop,2),'%')
+  plot_dat <- data.frame(PC=paste0('PC',1:length(cum_prop)), sd=pca_res$sdev,prop=prop,cum_prop=cum_prop,label=cum_prop_label)
+
+  p <- ggplot(plot_dat,aes(x=reorder(PC,cum_prop),y=sd)) + geom_bar(stat="identity") + theme_bw() +
+       xlab('PC') + geom_text(aes(label = label),vjust=-1)
+  plot(p)
+}
+
+f_loadings <- function(pca_res){
+  plot_dat <- as.data.frame(pca_res$rotation^2)
+  plot_dat$vul <- row.names(plot_dat)
+  plot_dat <- plot_dat %>% gather(PC, wt, -vul)
+  plot_dat$wt <- round(100*plot_dat$wt,2)
+  plot_dat$order <- as.numeric(sub('.*PC', '', plot_dat$PC))
+
+  
+  p <- ggplot(data=plot_dat,aes(fill=vul, y=wt, x=reorder(PC,order))) + geom_bar(position="stack", stat="identity") +
+       ylab('Contribution Wt') + xlab('PC')
+
+  plot(p)
+}
+```
+
+
+```{r domain4}
+domain.var <- const[const$pca=='pca4' & !is.na(const$pca),'f.var.name']
+
+## USER CHECK: check coding of all variables 'character' ok for binary/categorical but for numeric/continuous/ordinal should change to numeric/integer
+lapply(dhs.seg[,domain.var],class)  
+# if you need to change to numeric copy code below with desirable name
+# dhs.seg.des$variables$num.children <- as.numeric(dhs.seg.des$variables$num.children)
+
+#perform weighted PCA where categorical variable is treated as series of dummies
+d4 <- svyprcomp(as.formula(paste0('~',paste(domain.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+summary(d4)   #proportion of total variable explained by each component 
+
+### Look at screeplot to determine how many PC's capture the variation in the data (rule of thumb around 60%)
+f_screeplot(d4)
+
+### Look at PC factor loadings (can look at any two PC combinations)
+d4$rotation
+f_loadings(pca_res = d4)
+
+
+#biplots
+f_biplot(d4$rotation,pc=c(1,2))   #PCA 1/2
+f_biplot(d4$rotation,pc=c(2,3))   #PCA 2/3
+f_biplot(d4$rotation,pc=c(1,3))   #PCA 1/3
+
+rm(domain.var,d4)
+
+```
+
+
+```{r functionsrepeat5}
+#### Define functions ##
+
+f_biplot <- function(load,pc){
+  plot_dat <- as.data.frame(load[,pc])
+  plot_dat$labels <- row.names(plot_dat)
+  plot_dat$start_x <- 0
+  plot_dat$stary_y <- 0
+  max_lim <- ceiling(max(abs(plot_dat[,1:2])))
+  
+  p <- ggplot(plot_dat) + 
+    geom_segment(aes(x=plot_dat$start_x,y=plot_dat$stary_y,xend=plot_dat[,1],yend=plot_dat[,2]),arrow = arrow(length=unit(0.2,'cm'))) +
+    coord_cartesian(xlim = c(-max_lim,max_lim),ylim=c(-max_lim,max_lim)) + xlab(names(plot_dat)[1]) + ylab(names(plot_dat)[2]) +
+    theme_bw() +
+    geom_text_repel(mapping = aes(label=plot_dat$labels,x=plot_dat[,1],y=plot_dat[,2]))
+  plot(p)
+}
+
+f_screeplot <- function(pca_res){
+  prop <- (pca_res$sdev)^2/sum((pca_res$sdev)^2)
+  cum_prop <- cumsum(prop)
+  cum_prop_label <- paste0(round(100*cum_prop,2),'%')
+  plot_dat <- data.frame(PC=paste0('PC',1:length(cum_prop)), sd=pca_res$sdev,prop=prop,cum_prop=cum_prop,label=cum_prop_label)
+
+  p <- ggplot(plot_dat,aes(x=reorder(PC,cum_prop),y=sd)) + geom_bar(stat="identity") + theme_bw() +
+       xlab('PC') + geom_text(aes(label = label),vjust=-1)
+  plot(p)
+}
+
+f_loadings <- function(pca_res){
+  plot_dat <- as.data.frame(pca_res$rotation^2)
+  plot_dat$vul <- row.names(plot_dat)
+  plot_dat <- plot_dat %>% gather(PC, wt, -vul)
+  plot_dat$wt <- round(100*plot_dat$wt,2)
+  plot_dat$order <- as.numeric(sub('.*PC', '', plot_dat$PC))
+
+  
+  p <- ggplot(data=plot_dat,aes(fill=vul, y=wt, x=reorder(PC,order))) + geom_bar(position="stack", stat="identity") +
+       ylab('Contribution Wt') + xlab('PC')
+
+  plot(p)
+}
+```
+
+
+```{r domain5}
+domain.var <- const[const$pca=='pca5' & !is.na(const$pca),'f.var.name']
+
+## USER CHECK: check coding of all variables 'character' ok for binary/categorical but for numeric/continuous/ordinal should change to numeric/integer
+lapply(dhs.seg[,domain.var],class)  
+# if you need to change to numeric copy code below with desirable name
+# dhs.seg.des$variables$num.children <- as.numeric(dhs.seg.des$variables$num.children)
+
+#perform weighted PCA where categorical variable is treated as series of dummies
+d5 <- svyprcomp(as.formula(paste0('~',paste(domain.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+summary(d5)   #proportion of total variable explained by each component 
+
+### Look at screeplot to determine how many PC's capture the variation in the data (rule of thumb around 60%)
+f_screeplot(d5)
+
+### Look at PC factor loadings (can look at any two PC combinations)
+d5$rotation
+f_loadings(pca_res = d5)
+
+#biplots
+f_biplot(d5$rotation,pc=c(1,2))   #PCA 1/2
+f_biplot(d5$rotation,pc=c(2,3))   #PCA 2/3
+f_biplot(d5$rotation,pc=c(1,3))   #PCA 1/3
+
+rm(domain.var,d5)
+
+```
+
+
+```{r functionsrepeat6}
+#### Define functions ##
+
+f_biplot <- function(load,pc){
+  plot_dat <- as.data.frame(load[,pc])
+  plot_dat$labels <- row.names(plot_dat)
+  plot_dat$start_x <- 0
+  plot_dat$stary_y <- 0
+  max_lim <- ceiling(max(abs(plot_dat[,1:2])))
+  
+  p <- ggplot(plot_dat) + 
+    geom_segment(aes(x=plot_dat$start_x,y=plot_dat$stary_y,xend=plot_dat[,1],yend=plot_dat[,2]),arrow = arrow(length=unit(0.2,'cm'))) +
+    coord_cartesian(xlim = c(-max_lim,max_lim),ylim=c(-max_lim,max_lim)) + xlab(names(plot_dat)[1]) + ylab(names(plot_dat)[2]) +
+    theme_bw() +
+    geom_text_repel(mapping = aes(label=plot_dat$labels,x=plot_dat[,1],y=plot_dat[,2]))
+  plot(p)
+}
+
+f_screeplot <- function(pca_res){
+  prop <- (pca_res$sdev)^2/sum((pca_res$sdev)^2)
+  cum_prop <- cumsum(prop)
+  cum_prop_label <- paste0(round(100*cum_prop,2),'%')
+  plot_dat <- data.frame(PC=paste0('PC',1:length(cum_prop)), sd=pca_res$sdev,prop=prop,cum_prop=cum_prop,label=cum_prop_label)
+
+  p <- ggplot(plot_dat,aes(x=reorder(PC,cum_prop),y=sd)) + geom_bar(stat="identity") + theme_bw() +
+       xlab('PC') + geom_text(aes(label = label),vjust=-1)
+  plot(p)
+}
+
+f_loadings <- function(pca_res){
+  plot_dat <- as.data.frame(pca_res$rotation^2)
+  plot_dat$vul <- row.names(plot_dat)
+  plot_dat <- plot_dat %>% gather(PC, wt, -vul)
+  plot_dat$wt <- round(100*plot_dat$wt,2)
+  plot_dat$order <- as.numeric(sub('.*PC', '', plot_dat$PC))
+
+  
+  p <- ggplot(data=plot_dat,aes(fill=vul, y=wt, x=reorder(PC,order))) + geom_bar(position="stack", stat="identity") +
+       ylab('Contribution Wt') + xlab('PC')
+
+  plot(p)
+}
+```
+
+```{r domain6}
+domain.var <- const[const$pca=='pca6' & !is.na(const$pca),'f.var.name']
+
+## USER CHECK: check coding of all variables 'character' ok for binary/categorical but for numeric/continuous/ordinal should change to numeric/integer
+lapply(dhs.seg[,domain.var],class)  
+# if you need to change to numeric copy code below with desirable name
+# dhs.seg.des$variables$num.children <- as.numeric(dhs.seg.des$variables$num.children)
+
+#perform weighted PCA where categorical variable is treated as series of dummies
+d6 <- svyprcomp(as.formula(paste0('~',paste(domain.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+summary(d6)   #proportion of total variable explained by each component 
+
+### Look at screeplot to determine how many PC's capture the variation in the data (rule of thumb around 60%)
+f_screeplot(d6)
+
+
+### Look at PC factor loadings (can look at any two PC combinations)
+d6$rotation
+f_loadings(pca_res = d6)
+
+
+#biplots
+f_biplot(d6$rotation,pc=c(1,2))   #PCA 1/2
+f_biplot(d6$rotation,pc=c(2,3))   #PCA 2/3
+f_biplot(d6$rotation,pc=c(1,3))   #PCA 1/3
+
+rm(domain.var,d6)
+
+```
+
+
+```{r functionsrepeat7}
+#### Define functions ##
+
+f_biplot <- function(load,pc){
+  plot_dat <- as.data.frame(load[,pc])
+  plot_dat$labels <- row.names(plot_dat)
+  plot_dat$start_x <- 0
+  plot_dat$stary_y <- 0
+  max_lim <- ceiling(max(abs(plot_dat[,1:2])))
+  
+  p <- ggplot(plot_dat) + 
+    geom_segment(aes(x=plot_dat$start_x,y=plot_dat$stary_y,xend=plot_dat[,1],yend=plot_dat[,2]),arrow = arrow(length=unit(0.2,'cm'))) +
+    coord_cartesian(xlim = c(-max_lim,max_lim),ylim=c(-max_lim,max_lim)) + xlab(names(plot_dat)[1]) + ylab(names(plot_dat)[2]) +
+    theme_bw() +
+    geom_text_repel(mapping = aes(label=plot_dat$labels,x=plot_dat[,1],y=plot_dat[,2]))
+  plot(p)
+}
+
+f_screeplot <- function(pca_res){
+  prop <- (pca_res$sdev)^2/sum((pca_res$sdev)^2)
+  cum_prop <- cumsum(prop)
+  cum_prop_label <- paste0(round(100*cum_prop,2),'%')
+  plot_dat <- data.frame(PC=paste0('PC',1:length(cum_prop)), sd=pca_res$sdev,prop=prop,cum_prop=cum_prop,label=cum_prop_label)
+
+  p <- ggplot(plot_dat,aes(x=reorder(PC,cum_prop),y=sd)) + geom_bar(stat="identity") + theme_bw() +
+       xlab('PC') + geom_text(aes(label = label),vjust=-1)
+  plot(p)
+}
+
+f_loadings <- function(pca_res){
+  plot_dat <- as.data.frame(pca_res$rotation^2)
+  plot_dat$vul <- row.names(plot_dat)
+  plot_dat <- plot_dat %>% gather(PC, wt, -vul)
+  plot_dat$wt <- round(100*plot_dat$wt,2)
+  plot_dat$order <- as.numeric(sub('.*PC', '', plot_dat$PC))
+
+  
+  p <- ggplot(data=plot_dat,aes(fill=vul, y=wt, x=reorder(PC,order))) + geom_bar(position="stack", stat="identity") +
+       ylab('Contribution Wt') + xlab('PC')
+
+  plot(p)
+}
+```
+
+
+```{r domain7}
+domain.var <- const[const$pca=='pca7' & !is.na(const$pca),'f.var.name']
+
+## USER CHECK: check coding of all variables 'character' ok for binary/categorical but for numeric/continuous/ordinal should change to numeric/integer
+lapply(dhs.seg[,domain.var],class)  
+# if you need to change to numeric copy code below with desirable name
+# dhs.seg.des$variables$num.children <- as.numeric(dhs.seg.des$variables$num.children)
+
+#perform weighted PCA where categorical variable is treated as series of dummies
+d7 <- svyprcomp(as.formula(paste0('~',paste(domain.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+summary(d7)   #proportion of total variable explained by each component 
+
+### Look at screeplot to determine how many PC's capture the variation in the data (rule of thumb around 60%)
+f_screeplot(d7)
+
+### Look at PC factor loadings (can look at any two PC combinations)
+d7$rotation
+f_loadings(pca_res = d7)
+
+
+#biplots
+f_biplot(d7$rotation,pc=c(1,2))   #PCA 1/2
+f_biplot(d7$rotation,pc=c(2,3))   #PCA 2/3
+f_biplot(d7$rotation,pc=c(1,3))   #PCA 1/3
+
+rm(domain.var,d7)
+
+```
+

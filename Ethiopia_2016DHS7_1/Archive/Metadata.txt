@@ -1,0 +1,16 @@
+File Name		Description
+Pathways_Kenya_Recode	Imports Kenya PATHWAYS data and recodes variables for modeling, also recodes the segments to the new system
+Pathways_Nigeria_Recode	Imports N. Nigeria PATHWAYS data and recodes variables for modeling, also recodes the segments
+dhs-swper		Code written by IDM to develop the different SWPER empowerment indices from DHS data
+Ethiopia_DHS		Imports IR and HR files and recodes two types of data: 1) variables necessary to apply the Kenya typing tool
+			to the Ethiopia DHS, 2) additional variables for modeling. The code includes an application of the typing tool
+			to the DHS data, and a few plots.
+Kenya_DHS		Imports IR and HR files for Kenya DHS and recodes variables for use in modeling. Code also imports a DesireLine
+			provided file that has the segment crosswalk for the Kenya typing tool (DHS Pathways interim segments &
+			factors.RDat). DesireLine provided a "broad cut" file, which included more of the housheholds in the DHS
+			and a shorter file, which had fewer households but used additional variables# This 
+PW_Nigeria_HB		Uses the file created by Pathways_Nigeria_Recode to create a series of plots and conduct modeling of home
+			birth in Nigeria.
+Kasi_r			Code developed by John VanderHeid to apply the typing tool to his Lagos dataset. Has good logic, but uses an
+			external dataset he's been working on for another project.
+			

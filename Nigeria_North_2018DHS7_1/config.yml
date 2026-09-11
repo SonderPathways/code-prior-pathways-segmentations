@@ -1,0 +1,45 @@
+
+
+########################
+default:
+  project_name: "Nigeria DHS 2018"
+  root_path: "C:/Users/jeremyco/OneDrive - Bill & Melinda Gates Foundation/scenario_dhs_nigeria_2018/"
+  user_path: "v3/"
+
+  create_new_pathways_workbook: FALSE
+  pathways_workbook_path: "pathways workbook - nigeria 2018.xlsx"
+  new_pathways_workbook_path: "pathways workbook - nigeria 2018 (new).xlsx"
+
+  shp_file: "gadm41_NGA_shp/gadm41_NGA_1.shp"
+  data_id_var: "v021"
+  data_strata_var: "v023"
+  data_state_var: "v023"
+
+
+########################
+docker:
+  project_name: "Nigeria DHS 2018"
+  root_path: "/home/rstudio/OneDrive - Bill & Melinda Gates Foundation/scenario_dhs_senegal_2019/"
+  user_path: "docker/"
+
+  pathways_workbook_path: "pathways workbook - senegal.xlsx"
+
+
+########################
+databricks:
+  project_name: "Nigeria DHS 2018"
+  root_path: "/Volumes/idm_general/pathways/pathways-segmentation-projects/nigeria-2018/"
+  user_path: "v2/"
+
+  create_new_pathways_workbook: FALSE
+  pathways_workbook_path: "pathways workbook - nigeria 2018.xlsx"
+  new_pathways_workbook_path: "new pathways workbook - nigeria 2018.xlsx"
+
+  shp_file: "gadm41_NGA_shp/gadm41_NGA_1.shp"
+  data_id_var: "v021"
+  data_strata_var: "v023"
+  data_state_var: "v023"
+
+
+
+

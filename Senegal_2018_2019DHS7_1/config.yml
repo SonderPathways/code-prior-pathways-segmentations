@@ -1,0 +1,29 @@
+
+
+########################
+default:
+  project_name: "Senegal DHS 2018-19"
+  root_path: "C:/Users/jeremyco/OneDrive - Bill & Melinda Gates Foundation/scenario_dhs_senegal_2019/"
+  user_path: "v4/"
+
+  create_new_pathways_workbook: FALSE
+  pathways_workbook_path: "pathways workbook - senegal.xlsx"
+  new_pathways_workbook_path: "pathways workbook - new.xlsx"
+
+
+  shp_file: "gadm41_SEN_shp/gadm41_SEN_1.shp"
+  data_id_var: "v021"
+  data_strata_var: "v023"
+  data_state_var: "v023"
+
+
+########################
+docker:
+  root_path: "/home/rstudio/OneDrive - Bill & Melinda Gates Foundation/scenario_dhs_senegal_2019/"
+  user_path: "docker/"
+
+  pathways_workbook_path: "pathways workbook - senegal.xlsx"
+
+
+
+

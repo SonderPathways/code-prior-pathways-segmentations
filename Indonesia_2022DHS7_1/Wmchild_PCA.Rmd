@@ -1,0 +1,1484 @@
+---
+title: "Women_with_child_Indonesia_PCA"
+author: "Lang Gao"
+date: "2024-02-28"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '6'
+    keep_md: true
+  word_document:
+    toc: yes
+    toc_depth: '6'
+  pdf_document:
+    toc: yes
+    toc_depth: '6'
+---
+
+<style type="text/css">
+
+h1.title {
+  font-size: 21px;
+  color: Blue;
+  text-align: center;
+}
+h4.author { /* Header 4 - and the author and data headers use this too  */
+    font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+h4.date { /* Header 4 - and the author and data headers use this too  */
+  font-size: 18px;
+  font-family: "Source Sans Pro Semibold", Times, serif;
+  color: Blue;
+  text-align: center;
+}
+</style>
+
+</br>
+
+
+***
+---
+
+#######################################
+1. Setting up the script
+#######################################
+
+Set up filepath, notation and packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,cache = FALSE)
+options(scipen = 100, digits = 4)
+
+#Set filepath
+setwd("/Users/langgao/Downloads/Freelancer projects/Sonder/Indonesia/Segmentation")
+```
+
+Load packages
+```{r,echo=FALSE}
+rm(list=ls())
+pacman::p_load("tidyverse", "knitr", "data.table", "lmtest", "logbin", "survey","readxl", "ggrepel", "FactoMineR", "factoextra", "corrr", "haven","ggplot2","ggcorrplot","gridExtra","knitr", "kableExtra")
+```
+
+Import the data
+```{r}
+const <- as.data.frame(read_xlsx("7_Construct_mapping.xlsx"))
+const <- const[order(const$category),]
+#view(const)
+#dim(const) #99 (some are repeated in different domains)
+
+vulnerability <- readRDS("4_Indonesia_DHS_vulnerability.rds")
+```
+
+Recode some variables for better visualzation
+```{r}
+#jd.ownincome.cat (character, initially, there is a value called "Not paid in cash or not working")
+vulnerability$jd.ownincome.cat <- ifelse(vulnerability$jd.ownincome.cat =="Not paid in cash or not working", "No cash pay", vulnerability$jd.ownincome.cat)
+#class(vulnerability$jd.ownincome.cat)
+
+#wd.ownincome.cat
+vulnerability$wd.ownincome.cat <- ifelse(vulnerability$wd.ownincome.cat == "Not paid in cash or not working", "No cash pay",vulnerability$wd.ownincome.cat)
+#table(vulnerability$wd.ownincome.cat)
+
+#wd.lrgpur.cat
+#table(vulnerability$wd.lrgpur.cat)
+
+#jd.index.cat
+vulnerability <- vulnerability %>% mutate(jd.index.cat = case_when(
+  jd.index.cat == "None" ~ "None",
+  jd.index.cat == "Not in union" ~ "Not in union",
+  jd.index.cat == "One to three" ~ "1-3",
+  jd.index.cat == "Four to six" ~ "4-6",
+))
+#table(vulnerability$jd.index.cat)
+
+#wd.index.cat
+vulnerability <- vulnerability %>% mutate(wd.index.cat = case_when(
+  wd.index.cat == "None" ~ "None",
+  wd.index.cat == "Not in union" ~ "Not in union",
+  wd.index.cat == "One to three" ~ "1-3",
+  wd.index.cat == "Four to six" ~ "4-6",
+))
+#table(vulnerability$wd.index.cat)
+```
+
+```{r}
+load("1_Indonesia_DHS_outcomes.RData")
+dhs.seg <- merge(vulnerability, outcomes, by="caseid", all.x=T)
+
+dhs.seg <- dhs.seg %>% 
+  filter(v201 > 0)
+
+dhs.seg.des <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg)
+#dim(dhs.seg) #34199   310
+```
+
+######################################
+2. Define Functions
+#######################################
+Functions
+```{r}
+f_biplot <- function(load,pc){
+  plot_dat <- as.data.frame(load[,pc])
+  plot_dat$labels <- row.names(plot_dat)
+  plot_dat$start_x <- 0
+  plot_dat$stary_y <- 0
+  max_lim <- ceiling(max(abs(plot_dat[,1:2])))
+  
+  p <- ggplot(plot_dat) + 
+    geom_segment(aes(x=plot_dat$start_x,y=plot_dat$stary_y,xend=plot_dat[,1],yend=plot_dat[,2]),arrow = arrow(length=unit(0.2,'cm'))) +
+    coord_cartesian(xlim = c(-max_lim,max_lim),ylim=c(-max_lim,max_lim)) + xlab(names(plot_dat)[1]) + ylab(names(plot_dat)[2]) +
+    theme_bw() +
+    geom_text_repel(mapping = aes(label=plot_dat$labels,x=plot_dat[,1],y=plot_dat[,2]))
+  plot(p)
+}
+
+f_screeplot <- function(pca_res){
+  prop <- (pca_res$sdev)^2/sum((pca_res$sdev)^2)
+  cum_prop <- cumsum(prop)
+  cum_prop_label <- paste0(round(100*cum_prop,2),'%')
+  plot_dat <- data.frame(PC=paste0('PC',1:length(cum_prop)), sd=pca_res$sdev,prop=prop,cum_prop=cum_prop,label=cum_prop_label)
+
+  p <- ggplot(plot_dat,aes(x=reorder(PC,cum_prop),y=sd)) + geom_bar(stat="identity") + theme_bw() +
+       xlab('PC') + geom_text(aes(label = label),vjust=-1)
+  plot(p)
+}
+
+f_loadings <- function(pca_res){
+  plot_dat <- as.data.frame(pca_res$rotation^2)
+  plot_dat$vul <- row.names(plot_dat)
+  plot_dat <- plot_dat %>% gather(PC, wt, -vul)
+  plot_dat$wt <- round(100*plot_dat$wt,2)
+  plot_dat$order <- as.numeric(sub('.*PC', '', plot_dat$PC))
+  
+  p <- ggplot(data = plot_dat, aes(fill = vul, y = wt, x = reorder(PC, order))) +
+    geom_bar(position = "stack", stat = "identity") +
+    ylab('Contribution Wt') + xlab('PC')
+  
+  plot(p)
+}
+
+f_loadings_1 <- function(pca_res,start_pc, end_pc){
+  plot_dat <- as.data.frame(pca_res$rotation^2)
+  plot_dat$vul <- row.names(plot_dat)
+  plot_dat <- plot_dat %>% gather(PC, wt, -vul)
+  plot_dat$wt <- round(100*plot_dat$wt,2)
+  plot_dat$order <- as.numeric(sub('.*PC', '', plot_dat$PC))
+  
+  plot_dat <- plot_dat %>%
+    filter(order >= start_pc & order <= end_pc)
+  
+  p <- ggplot(data = plot_dat, aes(fill = vul, y = wt, x = reorder(PC, order))) +
+    geom_bar(position = "stack", stat = "identity") +
+    ylab('Contribution Wt') + xlab('PC')
+  
+  plot(p)
+}
+
+f_eigenvalues <- function(pca_res){
+  eigenvalues <- pca_res$sdev^2
+  plot_data <- data.frame(PC = paste0('PC', 1:length(eigenvalues)), Eigenvalues = eigenvalues)
+
+  p <- ggplot(plot_data, aes(x = reorder(PC, -Eigenvalues), y = Eigenvalues)) +
+    geom_bar(stat = "identity", fill = "#2A3B90") +  
+    geom_text(aes(label = round(Eigenvalues, 2)), vjust = -1) +  
+    geom_line(aes(x = reorder(PC, -Eigenvalues), y = Eigenvalues), color = "#92278F", group = 1) +
+    theme_bw() +
+    xlab('PC') +
+    ylab('Eigenvalues') +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotating x-axis labels for readability
+
+  plot(p)
+}
+```
+
+Note before PCA
+```{r, echo=TRUE}
+# By treating categorical variables as a series of dummy variables (one-hot encoding), each category becomes a separate binary variable, therefore, we should look to see if any one of the categories (of the original categorical variable) provides unique information that is not captured by the other categories (e.g., explains variations in the data that the other categories do not). If one 'level' of the cateogry explains something the others don't in at least on PC dimension then should include it.
+
+# First, decide the number of PCs or dimensions to retain (elbow, cumulative explained variances)
+# Select variables: (1) on the biplot, those grouping or overlapping with each other indicates strong positive correlation with each other, 90 degree => uncorrelated; help us to drop correlated variables (2) among the correlated variables, if a var stands out showing stronger association with the retained PCs, use this var and drop others who correlated with it
+
+# About variables having categories with (relatively) small size: although categories with low frequencies leave limited distributional information in that space for model fit, small categories may be informative in some cases. In addition, it'd be better to look at the the number of observations instead of the percentage of the total sample given that we are working with an enormously large sample size. Therefore, at this stage, we will not drop variables based on small % of the sample alone, unless we are deciding between two variables of the same underlying measure with similarly strong factor loadings. We'll have another step after the initial LCA where we can prune and remove variables that don't show much variability across the segments. 
+```
+
+######################################
+3. Run PCA
+######################################
+
+## 1. Domain 1: Woman and her past experiences
+```{r, echo=TRUE}
+# Decision made after 1st and 2nd round: () marr/cohab and pship.cat are highly correlated. Chose marr/cohab, drop pship.cat. (2) keep ed.lev.cat1 (3) a few age related measures are highly correlated, use early.cohab.19 and drop the other age related measures.
+# The tricky one is the media exposure measures. The biplots in "media specific" show the positively correlation between freq.rad and freq.newsp and media.sum.2plus, while freq.tv and freq.net often show diffrent directions than media.sum.2plus. Considering their associations with the retained PCs, we are trying (1) drop the individual media sources and bring media.sum.2plus for PCA with other measures (2) drop media.sum.2plus and bring individual ones. Then compare.
+```
+
+```{r}
+domain1.var <- const[const$category=='Woman and her past experiences' & !is.na(const$category),'f.var.name']
+# Check whether all variables in this domain have the correct data type for the type of variable they represent. PCA is applicable to numerical data only as it is based on linear algebra calculations. For binary coded as numeric (0, 1), PCA can handle it without issues. For binary or categorical variables, 'character' is okay. For numeric, continuous, or ordinal variables, the data type should be 'numeric' or 'integer' if they are represented as numerical values. In the case of IND DHS, from script 4, the numeric variables in this domain are all binary. 
+#print(domain1.var)
+#lapply(dhs.seg[, ..domain1.var], class)
+
+# About "early.cohab.19": following the construct map and case from ETH, I initially mapped "early.cohab.19" twice under 2 sub-category of domain 1: (1) Natal home -> Partnership and reproductive history -> Age at marriage. (2) Social mnental models -> Internalized gender norms -> Early marriage. Therefore, here it generated the "second" one "early.cohab.19.1". Although they are under different sub-category and construct, bringing both may result in redundancy. Remove and then compare => no difference in loadings, cumulative variance, 
+#const1 <- const[!(const$f.var.name == 'early.cohab.19' & const$sub.category == 'Social mental models'), ]
+#view(const1)
+
+#domain1.var <- const1[const1$category=='Woman and her past experiences' & !is.na(const1$category),'f.var.name']
+#names(dhs.seg[, ..domain1.var])
+#lapply(dhs.seg[,..domain1.var],class)
+```
+
+### 1.0. Correlation matrix 
+```{r,echo=TRUE}
+# using the cor(), correlation coefficient is not calculated in corr.matrix.d1 below for some variables given the small size of certain categories. Note that cor() applies to numeric variables only.
+```
+
+```{r}
+d1.data <- dhs.seg[,..domain1.var]
+
+summary_table <- data.frame(Variable = character(0), Category = character(0), Frequency = integer(0), Percentage = numeric(0))
+
+for (variable_name in names(d1.data)) {
+  freq_table <- table(d1.data[[variable_name]])
+  freq_df <- data.frame(Variable = variable_name, Category = names(freq_table), Frequency = as.numeric(freq_table))
+  
+  total_samples <- sum(!is.na(d1.data[[variable_name]]))
+  freq_df$Percentage <- freq_df$Frequency / total_samples
+  
+  summary_table <- rbind(summary_table, freq_df)
+}
+summary_table
+```
+
+```{r, echo=TRUE}
+# Media exposure and early.cohab (marriage) are negatively correlated.
+```
+
+```{r}
+d1.data <- dhs.seg[, ..domain1.var]
+#str(d1.data)
+sel.col <- c(2, 4:15)
+d1.data <- d1.data[,..sel.col]
+#dim(d1.data) #13 numeric
+#head(d1.data)
+d1.normalized <- scale(d1.data)
+#head(d1.normalized)
+corr.matrix.d1 <- cor(d1.normalized)
+ggcorrplot(corr.matrix.d1)
+#corr.matrix.d1 
+#constant_vars <- sapply(d1.normalized, function(x) var(x, na.rm = TRUE) == 0)
+#names(d1.normalized)[constant_vars] #none of the variable contains constant value
+```
+
+create cross-tab to test correlations for character
+```{r}
+tab <- table(dhs.seg$ed.lev.cat1, dhs.seg$pship.cat)
+#print(tab)
+chi_sq_test <- chisq.test(tab)
+print(chi_sq_test) #highly associated in terms of ed level and pship.cat
+rm(tab)
+```
+
+### 1.1. Media specific
+```{r}
+d1.media.var <- c("freq.newsp", "freq.rad","freq.tv", "freq.net","media.sum.2plus")
+
+d1.media.pca <- svyprcomp(as.formula(paste0('~',paste(d1.media.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+```
+
+#### 1.1.1. Summry
+```{r}
+summary(d1.media.pca)
+```
+
+#### 1.1.2. Screeplots
+```{r}
+# All numeric. In total 5 PCs. Retaining PC1 and PC2 will give 66% cumulative explained variances. Look into PC4 and PC5 as well to help decide on which to drop.
+```
+
+```{r, fig.height=8}
+f_eigenvalues(d1.media.pca)
+```
+
+```{r,fig.height=8}
+f_screeplot(d1.media.pca)
+```
+
+#### 1.1.3. Examine loadings and biplots
+```{r, echo=TRUE}
+# media.sum.2plus is positively correlated with freq.newsp and freq.rad. Its positive correlation with freq.tv is weaker (0.25). For freq.net, the sample size is too small to calculate the correlation with media.sum.2plus. 
+# given the correlation, then look at the loadings: media.sum.2plus is uncorrelated with PC2 (almost 90 degree wih the direction of PC2), and strongly association with PC1. Try two scenarios and compare (1) take media index forward and drop all the individuals (2) use individuals (then will use all of the 4) and drop media index.
+```
+
+```{r}
+d1.media.pca$rotation
+```
+
+```{r}
+f_biplot(d1.media.pca$rotation,pc=c(1,2))   #PCA 1/2
+```
+
+### 1.2. PCA after dropping individual media and some others 
+```{r, echo=TRUE}
+# dropped for media: freq.newsp, freq.rad, freq.net, freq.tv
+# other drops: smoke, dv.index.2, and know.conceive have little or low contribution to the retained PCs. Dropped after 1st round.
+# pship.cat is dropped as well.
+# early.birth.19 and early.sex.19 are dropped too after 2nd round.
+```
+
+```{r}
+d1.var.drop1 <- c("freq.newsp", "freq.rad", "freq.net","freq.tv","smoke", "dv.index.2", "know.conceive", "pship.cat","early.birth.19","early.sex.19")
+
+d1.noindiv.var <- domain1.var[!domain1.var %in% d1.var.drop1]
+#lapply(dhs.seg[, ..d1.noind.media],class) #4 variables
+
+d1.noindiv.pca <- svyprcomp(as.formula(paste0('~',paste(d1.noindiv.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+```
+
+#### 1.2.1. Summary
+```{r}
+summary(d1.noindiv.pca)
+```
+
+#### 1.2.2. Screeplots
+```{r, echo=TRUE}
+# "elbow" at P2. Retaining PC1 and PC2 will already give cumulative 57% of explained variances. Add in PC3, giving 76% of the cumulative explained variances. Retain PC1, PC2, and PC3.
+```
+
+```{r, fig.height= 6}
+f_eigenvalues(d1.noindiv.pca)
+```
+
+```{r}
+fviz_eig(d1.noindiv.pca, addlabels = TRUE, ylim = c(0, 40), linecolor = "#92278F") 
+```
+
+```{r, fig.height= 8, echo=TRUE}
+## SD measures the variability of data points along a PC. A higher SD indicates that the PC captures more variability in the data. PC1 captures the most variance.
+## Look at screeplot to determine how many PC's capture the variation in the data, first applying rule of thumb around 60%
+f_screeplot(d1.noindiv.pca)
+```
+
+#### 1.2.3. Examine loadings and biplots
+```{r, echo=TRUE}
+# Overall, (categories of) ed.lev.cat, early.cohab.19 and marr.cohab show moderate to strong association with all retained PCs (see angles between variable arrows and the PC direction) 
+  ## marr/cohab and ed.lev.cat (some categories) also show positively correlation (angles between their arrows are small). Both are age associated. We discussed and decided to keep both.
+  ## marr/cohab and early.cohab.19 are close to each other, both are age associated. But consider to keep both (in PC2 they points to different directions, and they are not measure exact same thing about women)
+
+# media.sum.2plus contributes strongly and positively to PC2, but almost none to PC1 (90 degree with PC1 direction)
+```
+
+```{r,fig.width=20, fig.height=10}
+d1.noindiv.pca$rotation
+f_loadings(pca_res = d1.noindiv.pca)
+```
+
+```{r}
+f_biplot(d1.noindiv.pca$rotation,pc=c(1,2))   #PCA 1/2
+f_biplot(d1.noindiv.pca$rotation,pc=c(1,3))   #PCA 1/3
+f_biplot(d1.noindiv.pca$rotation,pc=c(2,3))   #PCA 2/3
+```
+
+### 1.3. PCA after dropping media index and some others 
+```{r, echo=TRUE}
+# dropped for media: media.sum.2plus
+# other drops: smoke, dv.index.2, and know.conceive have little or low contribution to the retained PCs. Dropped after 1st round.
+# pship.cat is dropped as well
+# early.birth.19 and early.sex.19 are dropped too after 2nd round.
+```
+
+```{r}
+d1.var.drop2 <- c("media.sum.2plus","smoke", "dv.index.2", "know.conceive", "pship.cat","early.birth.19","early.sex.19")
+
+d1.nosum.var <- domain1.var[!domain1.var %in% d1.var.drop2]
+#lapply(dhs.seg[, ..d1.nosum.var],class)
+
+d1.nosum.pca <- svyprcomp(as.formula(paste0('~',paste(d1.nosum.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+```
+
+#### 1.3.1. Summary
+```{r}
+summary(d1.nosum.pca)
+```
+
+#### 1.2.2. Screeplots
+```{r, echo=TRUE}
+# "elbow" at P2. Retaining PC1 and PC2 gives cumulative only 48% of explained variances. Add in PC3 (cumulative 60.8%)
+```
+
+```{r, fig.height= 7}
+f_eigenvalues(d1.nosum.pca)
+```
+
+```{r}
+fviz_eig(d1.nosum.pca, addlabels = TRUE, ylim = c(0, 35), linecolor = "#92278F") 
+```
+
+```{r, fig.height= 8, echo=TRUE}
+## SD measures the variability of data points along a PC. A higher SD indicates that the PC captures more variability in the data. PC1 captures the most variance.
+## Look at screeplot to determine how many PC's capture the variation in the data, first applying rule of thumb around 60%
+f_screeplot(d1.nosum.pca)
+```
+
+#### 1.3.3. Examine loadings and biplots
+```{r, echo=TRUE}
+# Similar to what we see in 1.2: overall, ed.lev.cat and early.cohab.19 show moderate associations with all retained PCs.
+  ## but marr.cohab and ed.lev.cat (some education) highly correlated when explaining PC1 (moderate to strong) and PC2 (weak)
+
+# The 4 individual media arrows group with each other when explaining PC2 and PC3.
+  ## freq.net contributes litte to PC1 and PC3 (almost 90 degree) while contributes positively to PC2; similar situation happens to freq.newsp. freq.net and freq.newsp are highly correlated (arrows overlap or close to each other).
+  ## freq.newsp and freq.rad are also relatively close to each other (though not as close as freq.newsp and freq.net)
+  ## Among the 4, freq.tv shows relatively less correlation with others.
+  ## Given the correlation seen, if to bring individual media sources, I'd propose to use freq.tv and freq.rad.
+  ## The individual media arrows also group with other arrows (ed, early.cohab.19, marr/cohab) in some biplots
+
+# Compared with 1.2, pros and cons: 
+  ##using media.sum.2plus: (1) pros: the retained 3 PCs capture more variances of the data; and media.sum.2plus is relatively further away from other arrows (2) cons: media.sum.plus contribute little to PC1 (though moderate to strong for PC2 and PC3)
+  ## using freq.tv and freq.rad: (1) pros: might be easier for typing tool; and weak (not as weak as media.sum.2plus for PC1), moderate to strong contribution to all PCs (2) cons: more correlations seen here with other arrows.
+  ## Slightly prefer media.sum.2plus (also look into the further PCs, media.sum.2plus contributes moderate to strong; while freq.tv and freq.rad contribute little to some PCs)
+```
+
+```{r,fig.width=20, fig.height=10}
+d1.nosum.pca$rotation
+f_loadings(pca_res = d1.nosum.pca)
+```
+
+```{r}
+f_biplot(d1.nosum.pca$rotation,pc=c(1,2))   #PCA 1/2
+f_biplot(d1.nosum.pca$rotation,pc=c(1,3))   #PCA 1/3
+f_biplot(d1.nosum.pca$rotation,pc=c(2,3))   #PCA 2/3
+```
+
+## 2. Domain 2: Household relationships
+```{r}
+domain2.var <- const[const$category=='Household relationships' & !is.na(const$category),'f.var.name']
+#lapply(dhs.seg[, ..domain2.var],class)
+#names(dhs.seg[, ..domain2.var])
+```
+
+### 2.1. Household structure specifc (PCA)
+```{r}
+d2c1.var <- const[const$construct=='Household structure' & !is.na(const$construct),'f.var.name']
+#lapply(dhs.seg[, ..d2c1.var],class) #4 out of 7 numeric
+```
+
+```{r, echo=TRUE}
+# From previous rounds: marr/coab and pship.cat, partner.absent highly correlated (some of the arrows overlap, some of the arrows have almost 180 degree angle - highly negatively associated). Agreed to choose marr/cohab and drop partner.absent and pship.cat. In the following, will take out partner.absent and pship.cat
+```
+
+```{r}
+d2c1.var <- d2c1.var[!d2c1.var %in% c("pship.cat","partner.absent")]
+#lapply(dhs.seg[, ..d2c1.var],class)
+d2c1.data <- dhs.seg[,..d2c1.var]
+
+summary_table <- data.frame(Variable = character(0), Category = character(0), Frequency = integer(0), Percentage = numeric(0))
+
+for (variable_name in names(d2c1.data)) {
+  freq_table <- table(d2c1.data[[variable_name]])
+  freq_df <- data.frame(Variable = variable_name, Category = names(freq_table), Frequency = as.numeric(freq_table))
+  
+  total_samples <- sum(!is.na(d2c1.data[[variable_name]]))
+  freq_df$Percentage <- freq_df$Frequency / total_samples
+  
+  summary_table <- rbind(summary_table, freq_df)
+}
+summary_table
+```
+
+```{r}
+d2c1.pca <- svyprcomp(as.formula(paste0('~',paste(d2c1.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+```
+
+#### 2.1.1. Summary
+```{r}
+summary(d2c1.pca)
+```
+
+#### 2.1.2. Screeplots
+```{r, echo=TRUE}
+# elbow at PC2; look at the cumlative explained variances, retaining PC1, PC2, PC3 gives 71% (improved from before when partner.abset was included). Retain PC1, PC2, PC3.
+```
+
+```{r, fig.height=8}
+f_eigenvalues(d2c1.pca)
+```
+
+```{r}
+fviz_eig(d2c1.pca, addlabels = TRUE, ylim = c(0, 40), linecolor = "#92278F") 
+```
+
+```{r, fig.height= 8}
+f_screeplot(d2c1.pca)
+```
+
+#### 2.1.3. Examine the loadings and biplots
+```{r, echo=TRUE}
+# num.under5.cat(2) and hh.kidwom.rat.2plus highly correlated (by definition)
+  ## here we also see better that num.under5.cat(3+) overlap with them as well.
+  ## we discussed that hh.kidwom.rat.2plus captures more information about women's care responsibility etc.
+  #I first took both to the 2.4 (PCA after dropping some variables) to further examine their correlation with other variables and contributions to the PCs: num.under5.cat groups with more variables like wd.ownincome.cat, talk.hiv, marr/cohab. And it contributes to explained variances less than hh.kidwom.rat.2plus. So in the updated 2.4 we are seeing below, I will keep hh.kidwom.rat.2plus but remove num.under5.cat
+
+# Here, we also see num.kids.house.2plus overlaps with marr.cohab; and overlaps with num.under15.2plus in one biplot as well. Look at the arrow angles and loadings: 
+  ## num.under15.2plus contributes little to PC2 and PC3 
+
+# Take marr.cohab, hh.kidwom.rat.2plus.
+```
+
+```{r}
+d2c1.pca$rotation
+```
+
+```{r, fig.height=10}
+f_biplot(d2c1.pca$rotation,pc=c(1,2)) #PCA 1/2
+f_biplot(d2c1.pca$rotation,pc=c(1,3)) #PCA 1/3
+f_biplot(d2c1.pca$rotation,pc=c(2,3)) #PCA 2/3
+```
+
+### 2.2. Decision-making specific (PCA)
+```{r}
+d2c2.var <- const[const$construct=='Decision-making' & !is.na(const$construct),'f.var.name']
+#lapply(dhs.seg[, ..d2c2.var],class)
+#names(dhs.seg[, ..d2c2.var])
+```
+
+#### 2.2.0. Distribution and correlation
+```{r}
+d2c2.data <- dhs.seg[,..d2c2.var]
+
+summary_table <- data.frame(Variable = character(0), Category = character(0), Frequency = integer(0), Percentage = numeric(0))
+
+for (variable_name in names(d2c2.data)) {
+  freq_table <- table(d2c2.data[[variable_name]])
+  freq_df <- data.frame(Variable = variable_name, Category = names(freq_table), Frequency = as.numeric(freq_table))
+  
+  total_samples <- sum(!is.na(d2c2.data[[variable_name]]))
+  freq_df$Percentage <- freq_df$Frequency / total_samples
+  
+  summary_table <- rbind(summary_table, freq_df)
+}
+summary_table
+```
+
+```{r, fig.width=30}
+plots <- list()
+
+for (variable_name in names(d2c2.data)) {
+  freq_table <- table(d2c2.data[[variable_name]])
+  freq_df <- data.frame(Category = names(freq_table), Frequency = as.numeric(freq_table))
+  
+  # Create a bar plot
+  p <- ggplot(freq_df, aes(x = Category, y = Frequency)) +
+    geom_bar(stat = "identity") +
+    labs(title = variable_name)
+  
+  plots[[variable_name]] <- p
+}
+
+#for (plot_name in names(plots)) {
+  #print(plots[[plot_name]])
+#}
+grid.arrange(grobs = plots, ncol = 7)
+```
+
+```{r}
+correlation_results <- data.frame()
+
+# Iterate through all pairs of categorical variables
+for (i in 1:(length(d2c2.var) - 1)) {
+  for (j in (i + 1):length(d2c2.var)) {
+    var1 <- d2c2.var[i]
+    var2 <- d2c2.var[j]
+    
+    cross_tab <- table(dhs.seg[[var1]], dhs.seg[[var2]])
+    chi_square_test <- chisq.test(cross_tab)
+    p_value <- round(chi_square_test$p.value, digits = 10)
+    
+    # Store the results in the data frame
+    result <- data.frame(
+      Variables = paste(var1, "vs", var2),
+      ChiSquare = chi_square_test$statistic,
+      DegreesOfFreedom = chi_square_test$parameter,
+      PValue = chi_square_test$p.value
+    )
+    
+    correlation_results <- rbind(correlation_results, result)
+  }
+}
+
+# Print the results
+print(correlation_results)
+```
+
+wd.ownincome.cat and wd.index.cat are highly associated
+```{r}
+tab <- table(dhs.seg$wd.ownincome.cat, dhs.seg$wd.index.cat)
+#print(tab)
+chi_sq_test <- chisq.test(tab)
+print(chi_sq_test) 
+rm(tab)
+```
+
+wd.ownincome.cat and jd.index.cat are highly associated
+```{r}
+tab <- table(dhs.seg$wd.ownincome.cat, dhs.seg$jd.index.cat)
+#print(tab)
+chi_sq_test <- chisq.test(tab)
+print(chi_sq_test) 
+rm(tab)
+```
+
+wd.ownincome.cat and jd.ownincome.cat are highly associated
+```{r}
+tab <- table(dhs.seg$wd.ownincome.cat, dhs.seg$jd.ownincome.cat)
+#print(tab)
+chi_sq_test <- chisq.test(tab)
+print(chi_sq_test) 
+rm(tab)
+```
+
+```{r}
+d2c2.pca <- svyprcomp(as.formula(paste0('~',paste(d2c2.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+```
+
+#### 2.2.1. Summary
+```{r}
+summary(d2c2.pca)
+```
+
+#### 2.2.2. Screeplots
+```{r, echo=TRUE}
+# retaining PC1, PC2,and PC3, giving cummative explained variance of 68%. Look into further PCs for clues on dropping variables who contribute little in general.
+```
+
+```{r, fig.width=15, fig.height=12}
+f_eigenvalues(d2c2.pca)
+```
+
+```{r}
+fviz_eig(d2c2.pca, addlabels = TRUE, ylim = c(0, 50), linecolor = "#92278F") 
+```
+
+```{r, fig.height= 12, fig.width= 20}
+f_screeplot(d2c2.pca)
+```
+
+#### 2.2.3. Examine the loadings and biplots
+```{r, echo=TRUE}
+# similar observation as round 1 that:some categories of ownincome and index overlap (no cash pay, no); and money (partner's earning) and health (healthcare for women) overlap; here we also find some categories of large purchase and visit overlap. Possibly these are all related to expenditure related decisions. It has been tested that wd.ownincome.cat and wd.index.cat, jd.index.cat, and jd.ownincome.cat are all highly correlated. 
+
+# Then look at the strength (length of the arrows) among the overlapped ones, most of them are short. The ownincome and index overlap (no cash pay, no) seem to be stronger predictor of P2 (more aligned with the direction of PC2, but not so much with PC1).
+
+# Propose to use wd.ownincome.cat (index seems to be highly driven by ownincome. Choosing ownincome will also make typing tool easier if used)
+```
+
+```{r}
+d2c2.pca$rotation
+```
+
+```{r, fig.width=10, fig.height=10}
+f_biplot(d2c2.pca$rotation,pc=c(1,2)) #PCA 1/2
+f_biplot(d2c2.pca$rotation,pc=c(2,3)) #PCA 1/2
+f_biplot(d2c2.pca$rotation,pc=c(1,2)) #PCA 1/2
+```
+
+### 2.3. Decision-making (drop no partner) (PCA)
+```{r}
+dhs.seg1 <- subset(dhs.seg, jd.ownincome.cat != "Not in union")
+#dim(dhs.seg1)
+#table(dhs.seg1$jd.ownincome.cat)
+#table(dhs.seg1$jd.lrgpur.cat)
+#table(dhs.seg1$wd.hlth.cat)
+#table(dhs.seg1$jd.money.cat)
+#table(dhs.seg1$jd.fp.cat)
+#table(dhs.seg1$jd.visit.cat)
+dhs.seg.des1 <-svydesign(id=~v021, strata=~v023, weights=~wt, data=dhs.seg1)
+
+d2c2.new.pca <- svyprcomp(as.formula(paste0('~',paste(d2c2.var,collapse = '+'))),design = dhs.seg.des1,center = TRUE,scale. = TRUE,scores = FALSE)
+```
+
+#### 2.3.0. Distribution and correlation
+```{r}
+d2c2.new.data <- dhs.seg1[,..d2c2.var]
+
+summary_table <- data.frame(Variable = character(0), Category = character(0), Frequency = integer(0), Percentage = numeric(0))
+
+for (variable_name in names(d2c2.new.data)) {
+  freq_table <- table(d2c2.data[[variable_name]])
+  freq_df <- data.frame(Variable = variable_name, Category = names(freq_table), Frequency = as.numeric(freq_table))
+  
+  total_samples <- sum(!is.na(d2c2.new.data[[variable_name]]))
+  freq_df$Percentage <- freq_df$Frequency / total_samples
+  
+  summary_table <- rbind(summary_table, freq_df)
+}
+```
+
+```{r, fig.width=30}
+plots <- list()
+
+for (variable_name in names(d2c2.new.data)) {
+  freq_table <- table(d2c2.new.data[[variable_name]])
+  freq_df <- data.frame(Category = names(freq_table), Frequency = as.numeric(freq_table))
+  
+  # Create a bar plot
+  p <- ggplot(freq_df, aes(x = Category, y = Frequency)) +
+    geom_bar(stat = "identity") +
+    labs(title = variable_name)
+  
+  plots[[variable_name]] <- p
+}
+
+#for (plot_name in names(plots)) {
+  #print(plots[[plot_name]])
+#}
+grid.arrange(grobs = plots, ncol = 7)
+```
+
+```{r}
+correlation_results <- data.frame()
+
+# Iterate through all pairs of categorical variables
+for (i in 1:(length(d2c2.var) - 1)) {
+  for (j in (i + 1):length(d2c2.var)) {
+    var1 <- d2c2.var[i]
+    var2 <- d2c2.var[j]
+    
+    cross_tab <- table(dhs.seg1[[var1]], dhs.seg1[[var2]])
+    chi_square_test <- chisq.test(cross_tab)
+    p_value <- round(chi_square_test$p.value, digits = 10)
+    
+    # Store the results in the data frame
+    result <- data.frame(
+      Variables = paste(var1, "vs", var2),
+      ChiSquare = chi_square_test$statistic,
+      DegreesOfFreedom = chi_square_test$parameter,
+      PValue = chi_square_test$p.value
+    )
+    
+    correlation_results <- rbind(correlation_results, result)
+  }
+}
+
+# Print the results
+print(correlation_results)
+```
+
+#### 2.2.1. Summary
+```{r}
+summary(d2c2.new.pca)
+```
+
+#### 2.3.2. Screeplots
+```{r, echo=TRUE}
+# retaining PC1, PC2, PC3 and PC4, giving cummative explained variance of 63%.
+```
+
+```{r, fig.width=15, fig.height=12}
+f_eigenvalues(d2c2.new.pca)
+```
+
+```{r}
+fviz_eig(d2c2.new.pca, addlabels = TRUE, ylim = c(0, 30), linecolor = "#92278F") 
+```
+
+```{r, fig.height= 12, fig.width= 20}
+f_screeplot(d2c2.new.pca)
+```
+
+#### 2.2.3. Examine the loadings and biplots
+```{r, echo=TRUE}
+# the "overlapping" or "grouping" is similar to what we observed earlier that: ownincome and index overlap (and overlap even more than before); and now, we see money (partner's earning) overlaps with not only health (healthcare for women), but also health, visit, large purchase, and visit. (before excluding "not in union", large purchase and visit overlap). The decision-making dynamic seem to be driven largely by who earns income (or who makes money) in the HH. 
+# It has been tested that wd.ownincome.cat and wd.index.cat, jd.index.cat, and jd.ownincome.cat are all highly correlated. 
+
+# The difference is: now the arrows of index and ownincome do not stand out as that much as before. And fp stands out in PC4. To look the the MCA (for categorical variables) in 2.4.
+```
+
+```{r}
+d2c2.new.pca$rotation
+```
+
+```{r, fig.width=10, fig.height=10}
+f_biplot(d2c2.new.pca$rotation,pc=c(1,2)) #PCA 1/2
+f_biplot(d2c2.new.pca$rotation,pc=c(1,3)) #PCA 1/3
+f_biplot(d2c2.new.pca$rotation,pc=c(1,4)) #PCA 1/4
+f_biplot(d2c2.new.pca$rotation,pc=c(2,3)) #PCA 2/3
+f_biplot(d2c2.new.pca$rotation,pc=c(2,4)) #PCA 2/4
+f_biplot(d2c2.new.pca$rotation,pc=c(3,4)) #PCA 3/4
+```
+
+### 2.4. Decision-making (drop no partner) (MCA)
+```{r}
+d2c2.new.data <- dhs.seg1[,..d2c2.var]
+d2c2.new.data <- d2c2.new.data[complete.cases(d2c2.new.data), ]
+#dim(d2c2.new.data) #14 variables
+#head(d2c2.data) 
+d2c2.new.mca <- MCA(d2c2.new.data, graph = FALSE)
+```
+
+#### 2.4.1. Summary
+```{r, echo=TRUE}
+#summary(d2c2_mca)
+eig.val <- get_eigenvalue(d2c2.new.mca)
+head(eig.val)
+# Retain Dim 4 will give 60% of cumulative explained variances (not as much as before when including no partner)
+```
+
+#### 2.4.2. Screeplots
+```{r}
+fviz_screeplot(d2c2.new.mca, addlabels = TRUE, ylim = c(0, 35))
+```
+
+```{r}
+var2 <- get_mca_var(d2c2.new.mca)
+var2
+```
+
+#### 2.4.3. Coordinates, and correlation between vars and PCs
+```{r, echo=TRUE}
+# The results in 2.4.3. and 2.4.4. now (without "Not in union") shows clearer than before that: index and ownincome explain or contribute more to the retained PCs (especially for PC2 compared with the rest). Here, index, ownincome are well presented by by PC1 and PC2, and fp is well presented by PC3 and PC4.
+```
+
+
+```{r}
+round(var2$coord, 2)
+```
+
+```{r, echo=TRUE}
+# The squared correlations between variables and the dimensions are used as coordinates
+fviz_mca_var(d2c2.new.mca, choice = "mca.cor", 
+            repel = TRUE, # Avoid text overlapping (slow)
+            ggtheme = theme_minimal(), axes = c(1,2))
+```
+
+```{r,fig.width=15, fig.height=15, echo=TRUE}
+# The distance between category points and the origin measures the quality of the variable category on the factor map. Category points that are away from the origin are well represented on the factor map, like ownincome (esp. not in union) and index.
+
+fviz_mca_var(d2c2.new.mca, col.var="black",
+             repel = TRUE, # Avoid text overlapping (slow)
+             ggtheme = theme_minimal(),axes = c(1,2))
+
+fviz_mca_var(d2c2.new.mca, col.var="black",
+             repel = TRUE, # Avoid text overlapping (slow)
+             ggtheme = theme_minimal(),axes = c(1,3))
+
+fviz_mca_var(d2c2.new.mca, col.var="black",
+             repel = TRUE, # Avoid text overlapping (slow)
+             ggtheme = theme_minimal(),axes = c(2,3))
+```
+
+```{r, eval=FALSE}
+# If a variable category is well represented by two dimensions, the sum of the cos2 is closed to one.
+round(var2$cos2,2)
+```
+
+```{r,fig.width=15, fig.height=15, eval=FALSE}
+#If a variable category is well represented by two dimensions, the sum of the cos2 is closed to one.
+fviz_mca_var(d2c2.new.mca, col.var = "cos2",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+             repel = TRUE, # Avoid text overlapping
+             ggtheme = theme_minimal(), axes = c(1,2))
+
+fviz_mca_var(d2c2.new.mca, col.var = "cos2",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+             repel = TRUE, # Avoid text overlapping
+             ggtheme = theme_minimal(), axes = c(1,3))
+
+fviz_mca_var(d2c2.new.mca, col.var = "cos2",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+             repel = TRUE, # Avoid text overlapping
+             ggtheme = theme_minimal(), axes = c(2,3))
+```
+
+#### 2.4.4. Quality of representation of variable categories
+```{r, fig.height=10, fig.width=25}
+fviz_cos2(d2c2.new.mca, choice = "var", axes = 1:2)
+fviz_cos2(d2c2.new.mca, choice = "var", axes = 1:3)
+fviz_cos2(d2c2.new.mca, choice = "var", axes = 1:4)
+fviz_cos2(d2c2.new.mca, choice = "var", axes = 2:3)
+fviz_cos2(d2c2.new.mca, choice = "var", axes = 2:4)
+```
+
+```{r, eval=FALSE}
+d2c2.desc <- dimdesc(d2c2_mca, axes = c(1,2))
+# Description of dimension 1
+d2c2.desc[[1]]
+# Description of dimension 2
+d2c2.desc[[2]]
+```
+
+
+### 2.5. PCA after dropping some vars
+```{r, echo=TRUE}
+# For household structure, drop:"pship.cat","partner.absent","num.kids.house.2plus","num.under15.2plus"
+# For decision-making, drop:"jd.ownincome.cat","jd.lrgpur.cat","wd.lrgpur.cat","jd.money.cat","wd.money.cat", "jd.hlth.cat","wd.hlth.cat","jd.fp.cat","wd.fp.cat","jd.visit.cat","wd.visit.cat","jd.index.cat","wd.index.cat" 
+# med.permis was first included but it contributes very little to all retained PCs (as we saw in previous rounds)
+```
+
+```{r}
+d2.var.drop <- c("pship.cat","partner.absent","num.kids.house.2plus","num.under15.2plus","num.under5.cat","jd.ownincome.cat","jd.lrgpur.cat","wd.lrgpur.cat","jd.money.cat","wd.money.cat","jd.hlth.cat","wd.hlth.cat","jd.fp.cat","wd.fp.cat","jd.visit.cat","wd.visit.cat","jd.index.cat","wd.index.cat","med.permis")
+
+d2.afterdrop.var <- domain2.var[!domain2.var %in% d2.var.drop]
+lapply(dhs.seg[, ..d2.afterdrop.var],class)
+
+d2.afterdrop.pca <- svyprcomp(as.formula(paste0('~',paste(d2.afterdrop.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+```
+
+#### 2.5.1. Summary
+```{r}
+summary(d2.afterdrop.pca)
+```
+
+#### 2.5.2. Screeplots
+```{r, echo=TRUE}
+# "elbow" at P2, but need to retain PC1 to PC4 will provide 63% cumulative explained variances (and if adding PC5, it will give 70% cumulative explained variances, higher than before when num.under5.cat and med.permises were included).
+```
+
+```{r,fig.height= 10}
+f_eigenvalues(d2.afterdrop.pca)
+```
+
+```{r}
+fviz_eig(d2.afterdrop.pca, addlabels = TRUE, ylim = c(0, 35), linecolor = "#92278F") 
+```
+
+```{r, fig.height= 10, fig.width=15}
+#Look at screeplot to determine how many PC's capture the variation in the data, first applying rule of thumb around 60%
+f_screeplot(d2.afterdrop.pca)
+```
+
+#### 2.5.3. Examine the loadings and biplots
+```{r, echo=TRUE}
+# Correlation: 
+  ## In PC1/PC2 biplot: refuse.sex and ask.condom overlap for "not partnered" category, very close to wd.ownincome.cat (not in union), a bit away from talk.hiv (not partnered). Of note, ask.condom (yes) overlaps with wd.income (yes), and they group closely with talk.hiv (yes), refuse.sex (yes), and husb.ed.mtprim.
+  ## In PC1/PC3 and PC1/PC4, similar groupings are observed. refuse.sex (yes) also overlaps with highestyearsedinHH.7plus
+  ## In PC2/PC3, PC2/PC4, PC3/PC4, similar groupings around wd.income.cat, highestyearsedinHH.7plus, and husb.ed.mtprim are observed. 
+
+# Drop: refuse.sex, ask.condom.
+# For talk.hiv and husb.ed.mtprim: they are close to each other in some cases, but not necessarily grouping with the remaining variables. Can keeo for the next step.
+# A challenge: here, we can see that hh.kidwom.rat.2plus overlaps with wd.ownincome.cat in some cases and close to highestyearsedinHH.7plus or husb.ed.mtprim in a few occasions. It contributes little to all retained PCs. Propose to drop.
+
+# Examine further in 2.5 after dropping hh.kidwom.rat.2plus, refuse.sex, ask.condom
+```
+
+```{r,fig.width=25, fig.height=15}
+d2.afterdrop.pca$rotation
+#f_loadings(pca_res = d2)
+f_loadings_1 (pca_res = d2.afterdrop.pca, start_pc = 1, end_pc = 15)
+```
+
+```{r,fig.width=12, fig.height=12}
+f_biplot(d2.afterdrop.pca$rotation,pc=c(1,2))   #PCA 1/2
+f_biplot(d2.afterdrop.pca$rotation,pc=c(1,3))   #PCA 1/3
+f_biplot(d2.afterdrop.pca$rotation,pc=c(1,4))   #PCA 1/4
+```
+
+
+```{r,fig.width=12, fig.height=12}
+f_biplot(d2.afterdrop.pca$rotation,pc=c(2,3))   #PCA 2/3
+f_biplot(d2.afterdrop.pca$rotation,pc=c(2,4))   #PCA 2/4
+f_biplot(d2.afterdrop.pca$rotation,pc=c(3,4))   #PCA 3/4
+```
+
+### 2.6. PCA after further drop
+```{r}
+d2.var.drop2 <- c("hh.kidwom.rat.2plus", "refuse.sex", "ask.condom")
+
+d2.dropmore.var <- d2.afterdrop.var[!d2.afterdrop.var %in% d2.var.drop2]
+#lapply(dhs.seg[, ..d2.dropmore.var],class)
+
+d2.dropmore.pca <- svyprcomp(as.formula(paste0('~',paste(d2.dropmore.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+```
+
+#### 2.6.1. Summary
+```{r}
+summary(d2.dropmore.pca)
+```
+
+#### 2.6.2. Screeplots
+```{r, echo=TRUE}
+# Just need to retain PC1, PC2 and PC3, giving 65% cumulative explained variances.
+```
+
+```{r, fig.height= 8}
+f_eigenvalues(d2.dropmore.pca)
+```
+
+```{r}
+fviz_eig(d2.dropmore.pca, addlabels = TRUE, ylim = c(0, 35), linecolor = "#92278F") 
+```
+
+```{r, fig.height= 12}
+#Look at screeplot to determine how many PC's capture the variation in the data, first applying rule of thumb around 60%
+f_screeplot(d2.dropmore.pca)
+```
+
+#### 2.6.3. Examine the loadings and biplots
+```{r, echo=TRUE}
+# Here, arrows of talk.hiv are close to wd.ownincome.cat or marr/cohab, or education related arrows. Consider to drop because of correlation.
+  ## Further look at its contribution to explained variances, weak in PC2, but moderate to PC1 and PC3.
+```
+
+```{r,fig.width=25, fig.height=15}
+d2.dropmore.pca$rotation
+#f_loadings(pca_res = d2)
+f_loadings_1 (pca_res = d2.dropmore.pca, start_pc = 1, end_pc = 9)
+```
+
+```{r,fig.width=12, fig.height=12}
+f_biplot(d2.dropmore.pca$rotation,pc=c(1,2))   #PCA 1/2
+f_biplot(d2.dropmore.pca$rotation,pc=c(1,3))   #PCA 1/3
+f_biplot(d2.dropmore.pca$rotation,pc=c(2,3))   #PCA 1/3
+```
+
+## 3. Domain 3: Household economics and living conditions
+### 3.1. Economic condition (asset) specific (PCA)
+```{r}
+d3c1.var <- const[const$construct=='Economic condition' & !is.na(const$construct),'f.var.name']
+var.todrop <- c("hh.floor", "hh.wall", "hh.roof","material.index","wealth.index.poor", "wealth.index.ur.ord", "work.seasonal", "partner.working", "work.type.new")
+d3c1.var <- d3c1.var[!d3c1.var %in% var.todrop]
+#lapply(dhs.seg[, ..d3c1.var],class)
+```
+
+```{r}
+d3c1.data <- dhs.seg[,..d3c1.var]
+
+summary_table <- data.frame(Variable = character(0), Category = character(0), Frequency = integer(0), Percentage = numeric(0))
+
+for (variable_name in names(d3c1.data)) {
+  freq_table <- table(d3c1.data[[variable_name]])
+  freq_df <- data.frame(Variable = variable_name, Category = names(freq_table), Frequency = as.numeric(freq_table))
+  
+  total_samples <- sum(!is.na(d3c1.data[[variable_name]]))
+  freq_df$Percentage <- freq_df$Frequency / total_samples
+  
+  summary_table <- rbind(summary_table, freq_df)
+}
+#summary_table
+```
+
+```{r}
+d3c1 <- svyprcomp(as.formula(paste0('~',paste(d3c1.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+```
+
+#### 3.1.1. Summary
+```{r, echo=TRUE}
+summary(d3c1)
+```
+
+#### 3.1.2. Screeplots
+```{r, echo=TRUE}
+# Retain PC1, PC2, PC3, giving 60.4% cumulative explained variances. Can look into further PCs for clues on dropping.
+```
+
+
+```{r, fig.height= 10, fig.width=18}
+f_eigenvalues(d3c1)
+```
+
+```{r}
+fviz_eig(d3c1, addlabels = TRUE, ylim = c(0, 45), linecolor = "#92278F") 
+```
+
+```{r, fig.height= 12, fig.width=18}
+#Look at screeplot to determine how many PC's capture the variation in the data, first applying rule of thumb around 60%
+f_screeplot(d3c1)
+```
+
+#### 3.1.3. Examine the loadings and biplots
+```{r,fig.width=25, fig.height=15}
+d3c1$rotation
+#f_loadings(pca_res = d3)
+f_loadings_1 (pca_res = d3c1, start_pc = 1, end_pc = 20)
+```
+
+```{r, echo=TRUE}
+# In terms of loadings, in PC1 (38% of the total variances), index is stronger than the individual (except product.index in PC1). PC1 mainly captures house assets, vehicle assets, and personal assets. But in PC1/PC2, arrow of personal index does not overlap much with individual assets; rather, these 3 individual assets group with individual assest for the house (like electricity, tv, radio)
+# In PC2 (14% of the total variance, cumulative 52%) captures product assets, index stronger than the individual
+# Although it is somewhat different in PC3, explained variance in PC3 is only 8%.
+# Consider keeping only index. Note: in PC2, direction of some individual assets are different from the index's.
+```
+
+```{r, fig.weight = 10, fig.height = 10}
+f_biplot(d3c1$rotation,pc=c(1,2))   #PCA 1/2
+f_biplot(d3c1$rotation,pc=c(1,3))   #PCA 1/3
+f_biplot(d3c1$rotation,pc=c(2,3))   #PCA 2/3
+```
+
+### 3.2. PCA after dropping some vars
+```{r, echo=TRUE}
+# dropped: individual asset
+# also to drop: migrant, hh.wat.time.11plus, med.cost, hh.floor, hh.roof, hh.wall whose contribution was little in previous rounds (otherwise still require 10 PCs)
+# further drop after discussion: work.type.new, hh.rooms, hh.wat.interrupt, hh.sanitation.cat1
+```
+
+```{r}
+domain3.var <- const[const$category=='Household economics and living conditions' & !is.na(const$category),'f.var.name']
+
+d3c1.select <- c("house.index", "vehic.index", "person.index","product.index")
+d3c1.drop <- d3c1.var[!d3c1.var %in% d3c1.select]
+
+domain3.var <- domain3.var[!domain3.var %in% d3c1.drop]
+#lapply(dhs.seg[,..domain3.var],class)
+
+d3.drop <- c("migrant", "hh.wat.time.11plus", "med.cost", "hh.floor", "hh.roof", "hh.wall", "work.type.new", "hh.rooms", "hh.wat.interrupt", "hh.sanitation.cat1")
+domain3.var <- domain3.var[!domain3.var %in% d3.drop]
+#lapply(dhs.seg[,..domain3.var],class)
+#names(dhs.seg[,..domain3.var])
+
+d3 <- svyprcomp(as.formula(paste0('~',paste(domain3.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+```
+
+```{r}
+# in domain 3, both individual assest variables and indexes created upon are brought to PCA. Multicollinearity is expected.
+character_vars <- domain3.var[sapply(dhs.seg[,..domain3.var], is.character)]
+character_vars
+numeric_vars <- domain3.var[sapply(dhs.seg[,..domain3.var], is.numeric)]
+numeric_vars
+```
+
+#### 3.2.1. Summary
+```{r, echo=TRUE}
+summary(d3)
+```
+
+#### 3.2.2 Screeplots
+```{r, echo=TRUE}
+# Retain PC1, PC2, PC3, PC4, and PC5, giving 60% of cumulative expained variances.
+```
+
+```{r, fig.height= 10, fig.width=20}
+f_eigenvalues(d3)
+```
+
+```{r}
+fviz_eig(d3, addlabels = TRUE, ylim = c(0, 30), linecolor = "#92278F") 
+```
+
+```{r, fig.height= 15, fig.width=25}
+#Look at screeplot to determine how many PC's capture the variation in the data, first applying rule of thumb around 60%
+f_screeplot(d3)
+```
+
+#### 3.2.3. Examine the loadings and biplots
+```{r, echo=TRUE}
+# women.bank.acct1 and hh.bank.acct1: correlated, not much difference in loadings. Keep women.bank.acct1 (a better or more precise measurement for women) and drop hh.bank.acct1
+# drop house.index, personal.index, and product.index, per discussion, to compare
+#vehic.index and material.index also overlaps with wealth.index.ur.ord. In the next attempt (3.3), I will remove material.index and vehic.index.
+# also, hh.toilet.flush overlaps with water related and wealth.index arrows. In the next attempt (3.3), remove hh.toilet.flush
+# hh.watpur.appr hilghly correlated with wat.cat. Keep wat.cat (see the colorful plot below, wat.cat contributes more)
+```
+
+```{r,fig.width=20, fig.height=15, echo=TRUE}
+d3$rotation
+# Only showing the first 9 PCs for better visualization
+f_loadings_1 (pca_res = d3, start_pc = 1, end_pc = 9)
+#f_loadings_1 (pca_res = d3, start_pc = 10, end_pc = 19)
+```
+
+```{r, fig.width=10, fig.height=15}
+f_biplot(d3$rotation,pc=c(1,2))   #PCA 1/2
+f_biplot(d3$rotation,pc=c(1,3))   #PCA 1/3
+f_biplot(d3$rotation,pc=c(1,4))   #PCA 1/4
+f_biplot(d3$rotation,pc=c(1,5))   #PCA 1/5
+
+f_biplot(d3$rotation,pc=c(2,3))   #PCA 2/3
+f_biplot(d3$rotation,pc=c(2,4))   #PCA 2/4
+f_biplot(d3$rotation,pc=c(2,5))   #PCA 2/5
+
+f_biplot(d3$rotation,pc=c(3,4))   #PCA 3/4
+f_biplot(d3$rotation,pc=c(3,5))   #PCA 3/5
+
+f_biplot(d3$rotation,pc=c(4,5))   #PCA 4/5
+```
+
+### 3.3. PCA after further dropping
+```{r, echo=TRUE}
+# further drop: hh.bank.acct1, house.index, person.index, product.index, wealth.index.poor
+# vehic.index and material.index also overlaps with wealth.index.ur.ord. In the following attempt, I am removing material.index and vehic.index.
+# also, hh.toilet.flush overlaps with water related and wealth.index arrows. In the following attempt, remove hh.toilet.flush
+# hh.watpur.appr hilghly correlated with wat.cat. Keep wat.cat (see the colorful plot below, wat.cat contributes more)
+# women.bank.acct: initially, this was included, but it then overlaped with arrows like wealth.index. Drop it.
+```
+
+```{r}
+d3.moredrop <- c("hh.bank.acct", "house.index", "person.index", "product.index", "wealth.index.poor", "material.index", "hh.toilet.flush","women.bank.acct","hh.watpur.appr","vehic.index")
+d3.moredrop.var <- domain3.var[!domain3.var %in% d3.moredrop]
+lapply(dhs.seg[,..d3.moredrop.var],class)
+
+d3.moredro.pca <- svyprcomp(as.formula(paste0('~',paste(d3.moredrop.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+```
+
+#### 3.3.1. Summary
+```{r}
+summary(d3.moredro.pca)
+```
+
+#### 3.3.2 Screeplots
+```{r, echo=TRUE}
+# Retain PC1, PC2, PC3, and PC4 (fewer than before), giving 61% of cumulative expained variances. But "partner.working" domainately contributes to PC5, so will show biplot of PC5 below as well.
+```
+
+```{r, fig.height= 10, fig.width=20}
+f_eigenvalues(d3.moredro.pca)
+```
+
+```{r}
+fviz_eig(d3.moredro.pca, addlabels = TRUE, ylim = c(0, 30), linecolor = "#92278F") 
+```
+
+```{r, fig.height= 15, fig.width=25}
+#Look at screeplot to determine how many PC's capture the variation in the data, first applying rule of thumb around 60%
+f_screeplot(d3.moredro.pca)
+```
+
+#### 3.3.3. Examine the loadings and biplots
+```{r, echo=TRUE}
+# partner.working groups with a few arrows related to wat.cat
+# work.seasonal groups with wealth.index
+
+```
+
+
+```{r,fig.width=25, fig.height=15, echo=TRUE}
+d3.moredro.pca$rotation
+# Only showing the first 9 PCs for better visualization
+f_loadings_1 (pca_res = d3.moredro.pca, start_pc = 1, end_pc = 9)
+```
+
+
+```{r, fig.width=10, fig.height=15}
+f_biplot(d3.moredro.pca$rotation,pc=c(1,2))   #PCA 1/2
+f_biplot(d3.moredro.pca$rotation,pc=c(1,3))   #PCA 1/3
+f_biplot(d3.moredro.pca$rotation,pc=c(1,4))   #PCA 1/4
+f_biplot(d3.moredro.pca$rotation,pc=c(1,5))   #PCA 1/5
+
+f_biplot(d3.moredro.pca$rotation,pc=c(2,3))   #PCA 2/3
+f_biplot(d3.moredro.pca$rotation,pc=c(2,4))   #PCA 2/4
+f_biplot(d3.moredro.pca$rotation,pc=c(2,5))   #PCA 2/5
+
+f_biplot(d3.moredro.pca$rotation,pc=c(3,4))   #PCA 3/4
+f_biplot(d3.moredro.pca$rotation,pc=c(3,5))   #PCA 3/5
+
+f_biplot(d3.moredro.pca$rotation,pc=c(4,5))   #PCA 4/5
+```
+
+FAMD after dropping some vars
+```{r, eval=FALSE}
+# using domain3.var from 3.2
+d3.data <- dhs.seg[,..domain3.var]
+d3.data <- d3.data[complete.cases(d3.data), ]
+#any(is.na(d3.data))
+#dim(d3.data)
+d3.famd <- FAMD(d3.data, ncp = 10, graph = FALSE)
+#print(d3.famd)
+```
+
+```{r, eval=FALSE}
+# Applying rule of the thumb 60%, 7 dimensions need to be retained.
+eig.val <- get_eigenvalue(d3.famd)
+```
+
+
+
+
+## 4. Domain 4: Health mental models
+```{r, echo=TRUE}
+# Decision made: med.distance, auto.contra
+```
+
+```{r}
+domain4.var <- const[const$category=='Health mental models' & !is.na(const$category),'f.var.name']
+#lapply(dhs.seg[,..domain4.var],class)
+names(dhs.seg[,..domain4.var])
+
+d4 <- svyprcomp(as.formula(paste0('~',paste(domain4.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+```
+
+### 4.1. Summary
+```{r}
+summary(d4)
+```
+
+### 4.2. Screeplot
+#### 4.2.1. Eigenvalues
+```{r, echo=TRUE}
+# "elbow" at PC3
+```
+
+```{r,fig.height= 8}
+f_eigenvalues(d4)
+```
+
+#### 4.2.2. Explained variances per PC
+```{r}
+fviz_eig(d4, addlabels = TRUE, ylim = c(0, 35), linecolor = "#92278F") 
+```
+
+#### 4.2.3. Cumulative explained variances
+```{r, fig.height= 12, fig.width=12, echo=TRUE}
+#Look at screeplot to determine how many PC's capture the variation in the data, first applying rule of thumb around 60%
+f_screeplot(d4)
+
+# SD measures the variability of data points along a PC. A higher SD indicates that the PC captures more variability in the data.
+# PC1 explains 25% of the total variances, PC2 explains 21%, and PC3 explains another 14%. Retaining PC1, PC2, PC3 will give a cumulative explained variance of 60.17%.
+```
+
+### 4.3. Examine the loadings
+```{r, echo=TRUE}
+# PC1 primarily captures information related med.distance. The other perceived barriers to healthcare (med.cost, med.permis, med.alone) also show moderate positive association. med.distance and med.cost are correlated (tested earlier). 
+# PC2 primarily captures information related to auto.contra (full or partial autonomy on deciding contraceptives). 
+# PC 3 primarily captures information related to auto.contra (no control over)
+```
+
+```{r}
+d4$rotation
+f_loadings(pca_res = d4)
+```
+
+### 4.4. Examine biplots
+```{r, echo=TRUE}
+# Although auto.contra contributes little to PC1, it shows high association with PC2 and PC3 (and PC1 alone explains only 25% of the total variances. Propose to use auto.contra.
+# The med.xxx (perceived berries to healthcare) show moderate to high positive associations with PC1, while little influence in PC2 or PC3. Note that med.permis and med.cost are also mapped to other domains. Check how they perform there. 
+```
+
+```{r}
+f_biplot(d4$rotation,pc=c(1,2))   #PCA 1/2
+f_biplot(d4$rotation,pc=c(1,3))   #PCA 1/3
+f_biplot(d4$rotation,pc=c(2,3))   #PCA 2/3
+```
+
+## 5. Domain 5: Social support
+```{r, echo=TRUE}
+# Decision made: disc.fp.yn, insurance.cov
+```
+
+```{r}
+domain5.var <- const[const$category=='Social support' & !is.na(const$category),'f.var.name']
+#lapply(dhs.seg[,..domain5.var],class)
+#names(dhs.seg[,..domain5.var])
+
+d5 <- svyprcomp(as.formula(paste0('~',paste(domain5.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+```
+
+### 5.1. Summary
+```{r}
+summary(d5)
+```
+
+### 5.2. Screeplot
+#### 5.2.1. Eigenvalues
+```{r, echo=TRUE}
+# Kaiser’s rule, eigenvalues > 1 for PC1 and PC2
+```
+
+```{r, fig.height= 10}
+f_eigenvalues(d5)
+```
+
+#### 5.2.2. Explained variances per PC
+```{r}
+fviz_eig(d5, addlabels = TRUE, ylim = c(0, 70), linecolor = "#92278F") 
+```
+
+#### 5.2.3. Cumulative explained variances
+```{r, fig.height= 10, echo=TRUE}
+#Look at screeplot to determine how many PC's capture the variation in the data, first applying rule of thumb around 60%
+f_screeplot(d5)
+
+# SD measures the variability of data points along a PC. A higher SD indicates that the PC captures more variability in the data.
+# PC1 explains almost 57% of the total variances, and PC2 explains 35%. Retaining PC1 and PC2 will explain 92% of the total variance. Proceed to see what additional patterns or variations are captured by PC2.
+```
+
+### 5.3. Examine the loadings
+```{r, echo=TRUE}
+# PC1 primarily captures information related insurance. Level of EPM coverage (employee, private, multiple) highly contributes to PC1 while insurance other coverage highly positively contributes to PC1.
+# PC2: whether having someone to discuss about family planning is highly positively associated with PC2
+```
+
+```{r}
+d5$rotation
+f_loadings(pca_res = d5)
+```
+
+### 5.4. Examine biplots
+```{r, echo=TRUE}
+# disc.fp.yn and insurance.cov are uncorrelated. Propose to bring both to LCA.
+```
+
+```{r}
+f_biplot(d5$rotation,pc=c(1,2))   #PCA 1/2
+```
+
+## 6. Domain 6: Human and natural systems
+```{r, echo=TRUE}
+# decision made: slum1, vehic.index, hh.land
+```
+
+
+```{r}
+domain6.var <- const[const$category=='Human and natural systems' & !is.na(const$category),'f.var.name']
+#lapply(dhs.seg[,..domain6.var],class)
+#names(dhs.seg[,..domain6.var])
+
+d6 <- svyprcomp(as.formula(paste0('~',paste(domain6.var,collapse = '+'))),design = dhs.seg.des,center = TRUE,scale. = TRUE,scores = FALSE)
+```
+
+### 6.1. Summary
+```{r}
+summary(d6)
+```
+
+### 6.2. Screeplot
+```{r, echo=TRUE}
+# "elbow" at PC3 (also that eigenvalues > 1 till PC3)
+```
+
+```{r, fig.height= 10}
+f_eigenvalues(d6)
+```
+
+```{r}
+fviz_eig(d6, addlabels = TRUE, ylim = c(0, 40), linecolor = "#92278F") 
+```
+
+```{r, fig.height= 10}
+#Look at screeplot to determine how many PC's capture the variation in the data, first applying rule of thumb around 60%
+f_screeplot(d6)
+```
+
+### 6.3. Examine the loadings
+```{r, echo=TRUE}
+# PC1 primarily captures information related to vehicle (vehic.index has the strongest positive association with PC1 (hh.bike, hh.motor, vehic.index, correlation)
+# PC2 primarily captures information related to slum1 (rural, non-slum). It also captures the asset of land.
+
+#_________________________________________________________________________________________________
+# PC3 primarily captures information related to slum 1 (slum)
+```
+
+```{r}
+d6$rotation
+f_loadings(pca_res = d6)
+```
+
+### 6.4. Examine biplots
+```{r, echo=TRUE}
+# About slum1: propose to use
+# About vehicle, car contributes less than bike and motor. vehic.index: 0 (no vehicle), 1 (1 vehicle), 2 (2 or 3 vehicles). Also check how other individual asset variables and the indexes work out.
+# About land, hh.land has moderate positive association with PC2, but almost uncorrelated in PC1 or PC3. 
+```
+
+```{r}
+f_biplot(d6$rotation,pc=c(1,2))   #PCA 1/2
+f_biplot(d6$rotation,pc=c(1,3))   #PCA 1/2
+f_biplot(d6$rotation,pc=c(2,3))   #PCA 1/2
+```
+
+
+
+
+
+
+
+
+

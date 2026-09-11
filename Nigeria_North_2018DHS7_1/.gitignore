@@ -1,0 +1,7 @@
+############
+.Rproj.user
+.Rhistory
+dhs_data/*
+gadm41*
+/**/plots/
+*.rds

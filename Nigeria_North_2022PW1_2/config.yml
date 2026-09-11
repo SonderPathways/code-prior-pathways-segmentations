@@ -1,0 +1,30 @@
+
+
+########################
+default:
+  project_name: "Northern Nigeria Pathways 2021 Revamp"
+  root_path: "/Users/michaelkalnoky/Documents/consulting/clients/Sonder/analysis/previous-pathways-segmentation-workspaces/sonder/pathways-segmentations_sonder/pathways-segmentation-NN_revamp/workflow_v2.1/"
+  user_path: "outputs/"
+
+  create_new_pathways_workbook: FALSE
+  pathways_workbook_path: "/Users/michaelkalnoky/Documents/consulting/clients/Sonder/analysis/previous-pathways-segmentation-workspaces/sonder/pathways-segmentations_sonder/pathways-segmentation-NN_revamp/workflow_v2.1/pathways workbook - pw nnigeria.xlsx"
+  new_pathways_workbook_path: "/Users/michaelkalnoky/Documents/consulting/clients/Sonder/analysis/previous-pathways-segmentation-workspaces/sonder/pathways-segmentations_sonder/pathways-segmentation-NN_revamp/workflow_v2.1/pathways workbook - pw nnigeria.xlsx (new)"
+
+  shp_file: "gadm41_NGA_shp/gadm41_NGA_1.shp"
+  data_state_var: "STATE"
+
+  use_svy_design: FALSE
+  svy_id_var: "PSUIDfull"
+  svy_strata_var: "STATE"
+
+
+########################
+docker:
+  root_path: "/home/rstudio/OneDrive - Bill & Melinda Gates Foundation/"
+  user_path: "docker/"
+
+  pathways_workbook_path:
+
+
+
+
